@@ -17,6 +17,18 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: "3.8"
+      - name: Auto set version from tag
+        # Ref: https://github.com/grst/python-ci-versioneer
+        run: |
+          # from refs/tags/1.2.3 get 1.2.3
+          VERSION=$(echo $GITHUB_REF | sed 's#.*/##')
+          echo "Setting version to $VERSION"
+          PLACEHOLDER='^version\s*=.*'
+          # ensure the placeholder is there. If grep doesn't find the placeholder
+          # it exits with exit code 1 and github actions aborts the build.
+          grep -E "$PLACEHOLDER" pyproject.toml
+          sed -i "s/$PLACEHOLDER/version = \"${VERSION}\"/g" pyproject.toml
+        shell: bash
       - name: Install wheel
         run: python3 -m pip install --upgrade build
       - name: Build
