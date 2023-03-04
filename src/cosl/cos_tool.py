@@ -5,24 +5,48 @@
 
 import logging
 import platform
+import re
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
+_QueryType = Literal["logql", "promql"]
+
+
+def ensure_querytype(func):
+    """A small decorator to ensure that query type is specified."""
+
+    def wrapper(self, *args, **kwargs):
+        if not self._query_type and not kwargs.get("query_type", None):
+            raise TypeError(
+                "Either a default query type or a per-method query type must be used for `CosTool`!"
+            )
+        return func(self, *args, **kwargs)
+
+    wrapper.__doc__ = func.__doc__
+    return wrapper
+
 
 class CosTool:
-    """Uses cos-tool to inject label matchers into alert rule expressions and validate rules."""
+    """Uses cos-tool to inject label matchers into alert rule expressions and validate rules.
+
+    Args:
+        default_query_type: an optional querytype to use for all invocations of this class, if
+          not specified per-method. Either :default_query_type: or per-method :query_type:
+          **must** be used, or a :TypeError: will be raised.
+    """
 
     _path = None
     _disabled = False
 
-    def __init__(self, charm):
-        self._charm = charm
+    def __init__(self, default_query_type: Optional[_QueryType] = None):
+        self._query_type = default_query_type
 
     @property
     def path(self):
@@ -36,8 +60,10 @@ class CosTool:
                 self._disabled = True
         return self._path
 
-    def apply_label_matchers(self, rules) -> dict:
+    @ensure_querytype
+    def apply_label_matchers(self, rules: dict, query_type: Optional[_QueryType] = None) -> dict:
         """Will apply label matchers to the expression of all alerts in all supplied groups."""
+        query_type = query_type or self._query_type
         if not self.path:
             return rules
         for group in rules["groups"]:
@@ -56,50 +82,95 @@ class CosTool:
                     if label in rule["labels"]:
                         topology[label] = rule["labels"][label]
 
-                rule["expr"] = self.inject_label_matchers(rule["expr"], topology)
+                rule["expr"] = self.inject_label_matchers(rule["expr"], topology, query_type)
         return rules
 
-    def validate_alert_rules(self, rules: dict) -> Tuple[bool, str]:
+    @ensure_querytype
+    def validate_alert_rules(
+        self, rules: dict, query_type: Optional[_QueryType] = None
+    ) -> Tuple[bool, str]:
         """Will validate correctness of alert rules, returning a boolean and any errors."""
+        query_type = query_type or self._query_type
         if not self.path:
             logger.debug("`cos-tool` unavailable. Not validating alert correctness.")
             return True, ""
 
         with tempfile.TemporaryDirectory() as tmpdir:
             rule_path = Path(tmpdir + "/validate_rule.yaml")
+
+            # Smash "our" rules format into what upstream actually uses for Loki,
+            # which is more like:
+            #
+            # groups:
+            #   - name: foo
+            #     rules:
+            #       - alert: SomeAlert
+            #         expr: up
+            #       - alert: OtherAlert
+            #         expr: up
+            if query_type == "logql":
+                transformed_rules = {"groups": []}  # type: ignore
+                for rule in rules["groups"]:
+                    transformed = {"name": str(uuid.uuid4()), "rules": [rule]}
+                    transformed_rules["groups"].append(transformed)
+
+                rules = transformed_rules
+
             rule_path.write_text(yaml.dump(rules))
 
-            args = [str(self.path), "validate", str(rule_path)]
+            args = [str(self.path), "--format", query_type, "validate", str(rule_path)]
             # noinspection PyBroadException
             try:
                 self._exec(args)
                 return True, ""
             except subprocess.CalledProcessError as e:
-                logger.debug("Validating the rules failed: %s", e.output)
+                logger.debug("Validating the rules failed: %s", e.output.decode("utf-8"))
                 return False, ", ".join(
                     [
                         line
-                        for line in e.output.decode("utf8").splitlines()
+                        for line in e.output.decode("utf-8").splitlines()
                         if "error validating" in line
                     ]
                 )
 
-    def inject_label_matchers(self, expression, topology) -> str:
+    @ensure_querytype
+    def inject_label_matchers(
+        self,
+        expression: str,
+        topology: dict,
+        query_type: Optional[_QueryType] = None,
+        dashboard_variable: Optional[bool] = False,
+    ) -> str:
         """Add label matchers to an expression."""
+        query_type = query_type or self._query_type
+
         if not topology:
             return expression
         if not self.path:
             logger.debug("`cos-tool` unavailable. Leaving expression unchanged: %s", expression)
             return expression
-        args = [str(self.path), "transform"]
+        args = [str(self.path), "--format", query_type, "transform"]
+
+        value_tmpl = r"${}" if dashboard_variable else "{}"
+
+        variable_topology = {k: value_tmpl.format(topology[k]) for k in topology.keys()}
         args.extend(
-            ["--label-matcher={}={}".format(key, value) for key, value in topology.items()]
+            [
+                "--label-matcher={}={}".format(key, value)
+                for key, value in variable_topology.items()
+            ]
         )
 
-        args.extend(["{}".format(expression)])
+        # Pass a leading "--" so expressions with a negation or subtraction aren't interpreted as
+        # flags
+        args.extend(["--", "{}".format(expression)])
         # noinspection PyBroadException
         try:
-            return self._exec(args)
+            return (
+                re.sub(r'="\$juju', r'=~"$juju', self._exec(args))
+                if dashboard_variable
+                else self._exec(args)
+            )
         except subprocess.CalledProcessError as e:
             logger.debug('Applying the expression failed: "%s", falling back to the original', e)
             return expression
