@@ -13,7 +13,9 @@ class TestTransformPromQL(unittest.TestCase):
 
     @unittest.mock.patch("platform.machine", lambda: "x86_64")
     @unittest.mock.patch("subprocess.run")
-    def test_returns_original_expression_when_subprocess_call_errors(self, mocked_run):
+    def test_returns_original_expression_when_subprocess_call_errors(
+        self, mocked_run: unittest.mock.Mock
+    ):
         mocked_run.side_effect = subprocess.CalledProcessError(
             returncode=10, cmd="cos-tool", stderr=""
         )
@@ -46,7 +48,7 @@ class TestTransformPromQL(unittest.TestCase):
     @unittest.mock.patch("platform.machine", lambda: "invalid")
     def test_uses_original_expression_when_binary_missing(self):
         tool = CosTool(default_query_type="promql")
-        output = tool.apply_label_matchers(
+        output: str = tool.apply_label_matchers(
             {
                 "groups": [
                     {

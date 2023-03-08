@@ -71,6 +71,8 @@ from collections import OrderedDict
 from typing import Dict, List, Optional
 from uuid import UUID
 
+from ops.charm import CharmBase
+
 
 class InvalidUUIDError(Exception):
     """Invalid UUID was provided."""
@@ -118,7 +120,7 @@ class JujuTopology:
         self._charm_name = charm_name
         self._unit = unit
 
-    def is_valid_uuid(self, uuid):
+    def is_valid_uuid(self, uuid: str) -> bool:
         """Validate the supplied UUID against the Juju Model UUID pattern.
 
         Args:
@@ -133,7 +135,7 @@ class JujuTopology:
             return False
 
     @classmethod
-    def from_charm(cls, charm):
+    def from_charm(cls, charm: CharmBase):
         """Creates a JujuTopology instance by using the model data available on a charm object.
 
         Args:
@@ -150,7 +152,7 @@ class JujuTopology:
         )
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(cls, data: Dict[str, str]):
         """Factory method for creating `JujuTopology` children from a dictionary.
 
         Args:
@@ -179,7 +181,7 @@ class JujuTopology:
         *,
         remapped_keys: Optional[Dict[str, str]] = None,
         excluded_keys: Optional[List[str]] = None,
-    ) -> OrderedDict:
+    ) -> "OrderedDict[str, str]":
         """Format the topology information into an ordered dict.
 
         Keeping the dictionary ordered is important to be able to
@@ -208,7 +210,7 @@ class JujuTopology:
                 (remapped_keys.get(k), v) if remapped_keys.get(k) else (k, v) for k, v in ret.items()  # type: ignore
             )
 
-        return ret
+        return ret  # type: ignore
 
     @property
     def identifier(self) -> str:

@@ -27,7 +27,7 @@ jobs:
           # ensure the placeholder is there. If grep doesn't find the placeholder
           # it exits with exit code 1 and github actions aborts the build.
           grep -E "$PLACEHOLDER" pyproject.toml
-          sed -i "s/$PLACEHOLDER/version = \"${VERSION}\"/g" pyproject.toml
+          sed -i -e "s/^\(version\s*=\).*/\1 \"${VERSION}\"/g" pyproject.toml
         shell: bash
       - name: Install wheel
         run: python3 -m pip install --upgrade build

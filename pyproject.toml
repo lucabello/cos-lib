@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "PyYAML", "typing_extensions"]
 build-backend = "hatchling.build"
 
 [project]
 name = "cosl"
-version = "0.0.1-dev"  # replaced by CI
+version = "0.0.4-dev"  # seemingly NOT replaced by CI
 authors = [
   { name="sed-i", email="82407168+sed-i@users.noreply.github.com" },
 ]
@@ -61,6 +61,13 @@ docstring-convention = "google"
 copyright-check = "True"
 copyright-author = "Canonical Ltd."
 copyright-regexp = "Copyright\\s\\d{4}([-,]\\d{4})*\\s+%(author)s"
+
+[tool.pyright]
+pythonPlatform = "All"
+typeCheckingMode = "strict"
+reportIncompatibleMethodOverride = false
+reportImportCycles = false
+reportTypeCommentUsage = false
 
 # Static analysis tools configuration
 [tool.mypy]

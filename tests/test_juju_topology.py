@@ -3,21 +3,20 @@
 import unittest
 import uuid
 from collections import OrderedDict
+from typing import Dict, List
 
 from cosl.juju_topology import InvalidUUIDError, JujuTopology
 
 
 class TestJujuTopology(unittest.TestCase):
     def setUp(self):
-        self.input = OrderedDict(
-            [
-                ("model", "some-model"),
-                ("model_uuid", "00000000-0000-4000-8000-000000000000"),
-                ("application", "test-application"),
-                ("unit", "test-application/0"),
-                ("charm_name", "test-application"),
-            ]
-        )
+        self.input = {
+            "model": "some-model",
+            "model_uuid": "00000000-0000-4000-8000-000000000000",
+            "application": "test-application",
+            "unit": "test-application/0",
+            "charm_name": "test-application",
+        }
         self.topology = JujuTopology(
             self.input["model"],
             self.input["model_uuid"],
@@ -134,5 +133,5 @@ class TestJujuTopology(unittest.TestCase):
             self.assertEqual(f"'{invalid_uuid}' is not a valid UUID.", str(context.exception))
 
 
-def _filter_dict(labels, excluded_keys):
+def _filter_dict(labels: Dict[str, str], excluded_keys: List[str]) -> "OrderedDict[str, str]":
     return OrderedDict({k: v for k, v in labels.items() if k not in excluded_keys})
