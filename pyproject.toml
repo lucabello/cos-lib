@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling", "PyYAML", "typing_extensions"]
+requires = ["hatchling", "PyYAML", "typing-extensions"]
 build-backend = "hatchling.build"
 
 [project]
@@ -11,6 +11,11 @@ authors = [
 description = "Utils for COS Lite charms"
 readme = "README.md"
 requires-python = ">=3.8"
+dependencies = [
+  "ops",
+  "PyYAML",
+  "typing-extensions"
+]
 classifiers = [
     "Programming Language :: Python :: 3.8",
     "License :: OSI Approved :: Apache Software License",
