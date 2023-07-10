@@ -180,6 +180,7 @@ class JujuTopology:
         self,
         *,
         remapped_keys: Optional[Dict[str, str]] = None,
+        included_keys: Optional[List[str]] = None,
         excluded_keys: Optional[List[str]] = None,
     ) -> "OrderedDict[str, str]":
         """Format the topology information into an ordered dict.
@@ -190,6 +191,8 @@ class JujuTopology:
         Args:
             remapped_keys: A dictionary mapping old key names to new key names,
                 which will be substituted when invoked.
+            included_keys: A list of key names to include in the returned dict.
+                `excluded_keys` wins over `included_keys`.
             excluded_keys: A list of key names to exclude from the returned dict.
             uuid_length: The length to crop the UUID to.
         """
@@ -202,6 +205,10 @@ class JujuTopology:
                 ("charm_name", self.charm_name),
             ]
         )
+
+        if included_keys:
+            ret = OrderedDict({k: v for k, v in ret.items() if k in included_keys})
+
         if excluded_keys:
             ret = OrderedDict({k: v for k, v in ret.items() if k not in excluded_keys})
 
@@ -260,6 +267,27 @@ class JujuTopology:
         produced the matchers).
         """
         items = self.label_matcher_dict.items()
+        return ", ".join(['{}="{}"'.format(key, value) for key, value in items if value])
+
+    @property
+    def alert_expression_dict(self) -> Dict[str, str]:
+        """Topology labels to insert in alert rule expressions.
+
+        - "unit" is excluded because alert rules are forwarded over app data (one copy per app),
+          so having a "unit" matcher would exclude alerts from all other units.
+        - "charm" is excluded because in the case of subordinate charms, the labels need to match
+          the subordinate and the principal.
+        """
+        items = self.as_dict(
+            included_keys=["model", "model_uuid", "application"],
+        ).items()
+
+        return {"juju_{}".format(key): value for key, value in items if value}
+
+    @property
+    def alert_expression_str(self) -> str:
+        """Topology label matchers for the alert expression, as a promql/logql string."""
+        items = self.alert_expression_dict.items()
         return ", ".join(['{}="{}"'.format(key, value) for key, value in items if value])
 
     @property

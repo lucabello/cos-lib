@@ -167,7 +167,7 @@ class TestAlertRulesWithOneRulePerFile(unittest.TestCase):
 
         expected_alert_rule = {
             "alert": "CPUOverUse",
-            "expr": f"process_cpu_seconds_total{{{sorted_matchers(self.topology.label_matchers)}}} > 0.12",
+            "expr": f"process_cpu_seconds_total{{{sorted_matchers(self.topology.alert_expression_str)}}} > 0.12",
             "labels": self.topology.label_matcher_dict,
         }
 
@@ -194,7 +194,7 @@ class TestAlertRulesWithOneRulePerFile(unittest.TestCase):
 
         expected_alert_rule = {
             "alert": "CPUOverUse",
-            "expr": f"process_cpu_seconds_total{{{sorted_matchers(self.topology.label_matchers)}}} > 0.12",
+            "expr": f"process_cpu_seconds_total{{{sorted_matchers(self.topology.alert_expression_str)}}} > 0.12",
             "labels": self.topology.label_matcher_dict,
         }
 
@@ -234,6 +234,14 @@ class TestAlertRulesWithOneRulePerFile(unittest.TestCase):
         for group in rules_file_dict["groups"]:
             for rule in group["rules"]:
                 self.assertTrue("juju_unit" not in rule["labels"])
+
+    def test_charm_not_in_alert_expression(self):
+        rules = AlertRules(query_type="promql", topology=self.topology)
+        rules.add_path(self.sandbox.getsyspath("/rules/prom"), recursive=True)
+        rules_file_dict = rules.as_dict()
+        for group in rules_file_dict["groups"]:
+            for rule in group["rules"]:
+                self.assertTrue("charm=" not in rule["expr"])
 
 
 class TestAlertRulesWithMultipleRulesPerFile(unittest.TestCase):

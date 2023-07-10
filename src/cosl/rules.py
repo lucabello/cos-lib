@@ -299,7 +299,7 @@ class Rules(ABC):
                         repl = r'job=~".+"' if self.query_type == "logql" else ""
                         rule["expr"] = self.tool.inject_label_matchers(  # type: ignore
                             expression=re.sub(r"%%juju_topology%%,?", repl, rule["expr"]),
-                            topology=self.topology.label_matcher_dict,
+                            topology=self.topology.alert_expression_dict,
                             query_type=self.query_type,
                         )
 
