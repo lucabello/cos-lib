@@ -285,8 +285,9 @@ class Rules(ABC):
             # update rules with additional metadata
             groups = cast(List[OfficialRuleFileItem], groups)
             for group in groups:
-                # update group name with topology and sub-path
-                group["name"] = self._group_name(str(root_path), str(file_path), group["name"])
+                if not self._is_already_modified(group["name"]):
+                    # update group name with topology and sub-path
+                    group["name"] = self._group_name(str(root_path), str(file_path), group["name"])
 
                 # add "juju_" topology labels
                 for rule in group["rules"]:
@@ -294,7 +295,11 @@ class Rules(ABC):
                         rule["labels"] = {}
 
                     if self.topology:
-                        rule["labels"].update(self.topology.label_matcher_dict)
+                        # only insert labels that do not already exist
+                        for label, val in self.topology.label_matcher_dict.items():
+                            if label not in rule["labels"]:
+                                rule["labels"][label] = val
+
                         # insert juju topology filters into a prometheus rule
                         repl = r'job=~".+"' if self.query_type == "logql" else ""
                         rule["expr"] = self.tool.inject_label_matchers(  # type: ignore
@@ -329,6 +334,13 @@ class Rules(ABC):
         group_name_parts.extend([rel_path, group_name, f"{self.rule_type}s"])
         # filter to remove empty strings
         return "_".join(filter(None, group_name_parts))
+
+    def _is_already_modified(self, name: str) -> bool:
+        """Detect whether a group name has already been modified with juju topology."""
+        modified_matcher = re.compile(r"^.*?_[\da-f]{8}_.*?alerts$")
+        if modified_matcher.match(name) is None:
+            return False
+        return True
 
     # ---- END STATIC HELPER METHODS --- #
 
