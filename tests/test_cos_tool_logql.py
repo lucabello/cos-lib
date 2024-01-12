@@ -119,7 +119,7 @@ class TestValidateAlertsLogQL(unittest.TestCase):
             }
         )
         self.assertEqual(valid, False)
-        self.assertIn("error validating:", errs)
+        self.assertIn("error validating", errs)
 
     @unittest.mock.patch("platform.machine", lambda: "x86_64")
     def test_successfully_validates_good_alert_rules(self):
