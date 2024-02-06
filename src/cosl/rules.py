@@ -235,7 +235,7 @@ class Rules(ABC):
         ):
             groups_from_file = self._from_file(dir_path, file_path)
             if groups_from_file:
-                logger.debug("Reading %s rule from %s", Rules.rule_type, file_path)
+                logger.debug("Reading %s rule from %s", self.rule_type, file_path)
                 groups.extend(groups_from_file)  # type: ignore
 
         return groups
