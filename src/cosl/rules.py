@@ -304,7 +304,10 @@ class Rules(ABC):
                         repl = r'job=~".+"' if self.query_type == "logql" else ""
                         rule["expr"] = self.tool.inject_label_matchers(  # type: ignore
                             expression=re.sub(r"%%juju_topology%%,?", repl, rule["expr"]),
-                            topology=self.topology.alert_expression_dict,
+                            topology={
+                                k: rule["labels"][k]
+                                for k in ("juju_model", "juju_model_uuid", "juju_application")
+                            },
                             query_type=self.query_type,
                         )
 
