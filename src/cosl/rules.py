@@ -307,6 +307,7 @@ class Rules(ABC):
                             topology={
                                 k: rule["labels"][k]
                                 for k in ("juju_model", "juju_model_uuid", "juju_application")
+                                if rule["labels"].get(k) is not None
                             },
                             query_type=self.query_type,
                         )
