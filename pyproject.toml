@@ -89,3 +89,7 @@ explicit_package_bases = true
 check_untyped_defs = true
 allow_redefinition = true
 no_implicit_optional = false
+
+[tool.codespell]
+skip = ".git,.tox,build,lib,venv*,.mypy_cache"
+ignore-words-list = "assertIn"
