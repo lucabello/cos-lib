@@ -355,7 +355,7 @@ class Rules(ABC):
         All group names are augmented with juju topology.
 
         Args:
-            path: either a rules file or a dir of rules files.
+            dir_path: either a rules file or a dir of rules files.
             recursive: whether to read files recursively or not (no impact if `path` is a file).
 
         Returns:

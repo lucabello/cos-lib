@@ -8,11 +8,10 @@ import uuid
 from pathlib import Path
 
 import yaml
-from deepdiff import DeepDiff
-from fs.tempfs import TempFS
-
 from cosl.juju_topology import JujuTopology
 from cosl.rules import AlertRules
+from deepdiff import DeepDiff
+from fs.tempfs import TempFS
 
 
 class TestEndpointProvider(unittest.TestCase):

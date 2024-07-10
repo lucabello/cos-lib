@@ -46,26 +46,38 @@ show_missing = true
 line-length = 99
 target-version = ["py38"]
 
-[tool.isort]
-profile = "black"
-
 # Linting tools configuration
-[tool.flake8]
-max-line-length = 99
-max-doc-length = 99
-max-complexity = 10
-exclude = [".git", "__pycache__", ".tox", "build", "dist", "*.egg_info", "venv"]
-select = ["E", "W", "F", "C", "N", "R", "D", "H"]
-# Ignore W503, E501 because using black creates errors with this
-# Ignore D107 Missing docstring in __init__
-ignore = ["W503", "E501", "D107"]
-# D100, D101, D102, D103: Ignore missing docstrings in tests
-per-file-ignores = ["tests/*:D100,D101,D102,D103"]
-docstring-convention = "google"
-# Check for properly formatted copyright header in each file
-copyright-check = "True"
-copyright-author = "Canonical Ltd."
-copyright-regexp = "Copyright\\s\\d{4}([-,]\\d{4})*\\s+%(author)s"
+[tool.ruff]
+line-length = 99
+extend-exclude = ["__pycache__", "*.egg_info"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "C", "N", "D", "I001"]
+extend-ignore = [
+  "D203",
+  "D204",
+  "D213",
+  "D215",
+  "D400",
+  "D404",
+  "D406",
+  "D407",
+  "D408",
+  "D409",
+  "D413",
+]
+ignore = ["E501", "D107"]
+per-file-ignores = {"tests/*" = ["D100","D101","D102","D103","D104"]}
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pep8-naming]
+# Allow Pydantic's `@validator` decorator to trigger class method treatment.
+classmethod-decorators = ["classmethod", "pydantic.validator"]
 
 [tool.pyright]
 pythonPlatform = "All"
@@ -73,22 +85,6 @@ typeCheckingMode = "strict"
 reportIncompatibleMethodOverride = false
 reportImportCycles = false
 reportTypeCommentUsage = false
-
-# Static analysis tools configuration
-[tool.mypy]
-pretty = true
-python_version = 3.8
-follow_imports = "normal"
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_unused_configs = true
-show_traceback = true
-show_error_codes = true
-namespace_packages = true
-explicit_package_bases = true
-check_untyped_defs = true
-allow_redefinition = true
-no_implicit_optional = false
 
 [tool.codespell]
 skip = ".git,.tox,build,lib,venv*,.mypy_cache"

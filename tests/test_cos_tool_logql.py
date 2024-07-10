@@ -99,7 +99,7 @@ class TestTransformLogQL(unittest.TestCase):
             "juju_unit": "some_application/1",
         }
         output = tool.inject_label_matchers('{env="production"}', keys)
-        self.assertTrue(all(['{}="{}"'.format(k, v) in output for k, v in keys.items()]))
+        self.assertTrue(all('{}="{}"'.format(k, v) in output for k, v in keys.items()))
 
 
 class TestValidateAlertsLogQL(unittest.TestCase):
