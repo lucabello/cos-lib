@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cosl"
-version = "0.0.12"
+version = "0.0.13"
 authors = [
   { name="sed-i", email="82407168+sed-i@users.noreply.github.com" },
 ]
@@ -13,6 +13,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
   "ops",
+  "pydantic",
   "PyYAML",
   "typing-extensions"
 ]
@@ -65,6 +66,7 @@ extend-ignore = [
   "D408",
   "D409",
   "D413",
+  "E402",
 ]
 ignore = ["E501", "D107"]
 per-file-ignores = {"tests/*" = ["D100","D101","D102","D103","D104"]}
@@ -80,6 +82,8 @@ max-complexity = 15
 classmethod-decorators = ["classmethod", "pydantic.validator"]
 
 [tool.pyright]
+include = ["src"]
+extraPaths = ["lib", "src/cosl"]
 pythonPlatform = "All"
 typeCheckingMode = "strict"
 reportIncompatibleMethodOverride = false

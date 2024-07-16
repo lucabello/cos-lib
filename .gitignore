@@ -129,3 +129,6 @@ dmypy.json
 .pyre/
 cos-tool-*
 .idea
+
+# charm libs used by the coordinator charm
+lib/

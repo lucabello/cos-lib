@@ -29,7 +29,9 @@ jobs:
         with:
           python-version: 3.8
       - name: Install dependencies
-        run: python3 -m pip install tox
+        run: |
+          sudo snap install charmcraft --classic
+          python3 -m pip install tox
       - name: Run static analysis
         run: tox -vve static
   linting:
@@ -45,7 +47,9 @@ jobs:
         with:
           python-version: 3.8
       - name: Install dependencies
-        run: python3 -m pip install tox
+        run: |
+          sudo snap install charmcraft --classic
+          python3 -m pip install tox
       - name: Run linters
         run: tox -vve lint
   unit-test:
@@ -61,6 +65,8 @@ jobs:
         with:
           python-version: 3.8
       - name: Install dependencies
-        run: python -m pip install tox
+        run: |
+          sudo snap install charmcraft --classic
+          python -m pip install tox
       - name: Run tests
         run: tox -e unit
