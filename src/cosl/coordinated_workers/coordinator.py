@@ -326,7 +326,7 @@ class Coordinator(ops.Object):
         )
 
     @property
-    def _s3_config(self) -> dict[str, Any]:
+    def _s3_config(self) -> Dict[str, Any]:
         """The s3 configuration from relation data.
 
         Raises:
