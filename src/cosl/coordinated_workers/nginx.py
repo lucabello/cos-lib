@@ -15,7 +15,7 @@ NGINX_DIR = "/etc/nginx"
 NGINX_CONFIG = f"{NGINX_DIR}/nginx.conf"
 KEY_PATH = f"{NGINX_DIR}/certs/server.key"
 CERT_PATH = f"{NGINX_DIR}/certs/server.cert"
-CA_CERT_PATH = "/usr/loca/share/ca-certificates/ca.cert"
+CA_CERT_PATH = "/usr/local/share/ca-certificates/ca.cert"
 
 _NginxMapping = TypedDict(
     "_NginxMapping", {"nginx_port": int, "nginx_exporter_port": int}, total=True
@@ -60,10 +60,11 @@ class Nginx:
     def configure_tls(self, private_key: str, server_cert: str, ca_cert: str) -> None:
         """Save the certificates file to disk and run update-ca-certificates."""
         if self._container.can_connect():
-            self._container.push(KEY_PATH, private_key)
-            self._container.push(CERT_PATH, server_cert)
-            self._container.push(CA_CERT_PATH, ca_cert)
-            self._container.exec(["update-ca-certificates", "--fresh"])
+            self._container.push(KEY_PATH, private_key, make_dirs=True)
+            self._container.push(CERT_PATH, server_cert, make_dirs=True)
+            self._container.push(CA_CERT_PATH, ca_cert, make_dirs=True)
+            # FIXME: uncomment as soon as the nginx image contains the ca-certificates package
+            # self._container.exec(["update-ca-certificates", "--fresh"])
 
     def delete_certificates(self) -> None:
         """Delete the certificate files from disk and run update-ca-certificates."""
@@ -71,7 +72,8 @@ class Nginx:
             self._container.remove_path(CERT_PATH, recursive=True)
             self._container.remove_path(KEY_PATH, recursive=True)
             self._container.remove_path(CA_CERT_PATH, recursive=True)
-            self._container.exec(["update-ca-certificates", "--fresh"])
+            # FIXME: uncomment as soon as the nginx image contains the ca-certificates package
+            # self._container.exec(["update-ca-certificates", "--fresh"])
 
     def _has_config_changed(self, new_config: str) -> bool:
         """Return True if the passed config differs from the one on disk."""
@@ -146,7 +148,7 @@ class NginxPrometheusExporter:
     @property
     def layer(self) -> pebble.Layer:
         """Return the Pebble layer for Nginx Prometheus exporter."""
-        scheme = "https" if self._charm._is_cert_available else "http"  # type: ignore
+        scheme = "https" if self._charm.coordinator.tls_available else "http"  # type: ignore
         return pebble.Layer(
             {
                 "summary": "nginx prometheus exporter layer",

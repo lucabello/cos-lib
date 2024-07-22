@@ -7,10 +7,12 @@ import glob
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 from functools import partial
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Set, TypedDict
+from urllib.parse import urlparse
 
 import ops
 import yaml
@@ -106,6 +108,7 @@ class Coordinator(ops.Object):
         nginx_options: Optional[NginxMappingOverrides] = None,
         is_coherent: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
         is_recommended: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
+        tracing_receivers: Optional[Callable[[], Dict[str, str]]] = None,
     ):
         """Constructor for a Coordinator object.
 
@@ -122,6 +125,7 @@ class Coordinator(ops.Object):
             nginx_options: Non-default config options for Nginx.
             is_coherent: Custom coherency checker for a minimal deployment.
             is_recommended: Custom coherency checker for a recommended deployment.
+            tracing_receivers: Endpoints to which the workload (and the worker charm) can push traces to.
         """
         super().__init__(charm, key="coordinator")
         self._charm = charm
@@ -143,6 +147,7 @@ class Coordinator(ops.Object):
 
         self._is_coherent = is_coherent
         self._is_recommended = is_recommended
+        self._tracing_receivers_getter = tracing_receivers
 
         self.nginx = Nginx(
             self._charm,
@@ -328,15 +333,23 @@ class Coordinator(ops.Object):
             S3NotFoundError: The s3 integration is inactive.
         """
         s3_config = self.s3_requirer.get_s3_connection_info()
-        if (
+        if not (
             s3_config
             and "bucket" in s3_config
             and "endpoint" in s3_config
             and "access-key" in s3_config
             and "secret-key" in s3_config
         ):
-            return s3_config
-        raise S3NotFoundError("s3 integration inactive")
+            raise S3NotFoundError("s3 integration inactive")
+        s3_config["insecure"] = "false" if s3_config["endpoint"].startswith("https://") else "true"
+        s3_config["endpoint"] = re.sub(
+            rf"^{urlparse(s3_config['endpoint']).scheme}://", "", s3_config["endpoint"]
+        )
+        s3_config["region"] = s3_config.get("region", "")
+        s3_config["access_key_id"] = s3_config.pop("access-key")
+        s3_config["secret_access_key"] = s3_config.pop("secret-key")
+        s3_config["bucket_name"] = s3_config.pop("bucket")
+        return s3_config
 
     @property
     def s3_ready(self) -> bool:
@@ -491,6 +504,8 @@ class Coordinator(ops.Object):
             e.add_status(ops.BlockedStatus("[consistency] Missing any worker relation."))
         if not self.is_coherent:
             e.add_status(ops.BlockedStatus("[consistency] Cluster inconsistent."))
+        if not self.s3_ready:
+            e.add_status(ops.BlockedStatus("[consistency] Missing S3 integration."))
         elif not self.is_recommended:
             # if is_recommended is None: it means we don't have a recommended deployment criterion.
             e.add_status(ops.ActiveStatus("[coordinator] Degraded."))
@@ -536,19 +551,20 @@ class Coordinator(ops.Object):
 
     def update_cluster(self):
         """Build the workers config and distribute it to the relations."""
+        self.nginx.configure_pebble_layer()
+        self.nginx_exporter.configure_pebble_layer()
         if not self.is_coherent:
             logger.error("skipped cluster update: incoherent deployment")
             return
 
-        self.nginx.configure_pebble_layer()
-        self.nginx_exporter.configure_pebble_layer()
+        if not self._charm.unit.is_leader():
+            return
         # we share the certs in plaintext as they're not sensitive information
         # On every function call, we always publish everything to the databag; however, if there
         # are no changes, Juju will notice there's no delta and do nothing
         self.cluster.publish_data(
             worker_config=self._workers_config_getter(),
             loki_endpoints=self.loki_endpoints_by_unit,
-            # TODO tempo receiver for charm tracing
             **(
                 {
                     "ca_cert": self.cert_handler.ca_cert,
@@ -556,6 +572,13 @@ class Coordinator(ops.Object):
                     "privkey_secret_id": self.cluster.grant_privkey(VAULT_SECRET_LABEL),
                 }
                 if self.tls_available
+                else {}
+            ),
+            **(
+                {
+                    "tracing_receivers": self._tracing_receivers_getter(),
+                }
+                if self._tracing_receivers_getter
                 else {}
             ),
         )

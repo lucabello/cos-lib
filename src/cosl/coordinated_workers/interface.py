@@ -273,6 +273,7 @@ class ClusterProvider(Object):
         server_cert: Optional[str] = None,
         privkey_secret_id: Optional[str] = None,
         loki_endpoints: Optional[Dict[str, str]] = None,
+        tracing_receivers: Optional[Dict[str, str]] = None,
     ) -> None:
         """Publish the config to all related worker clusters."""
         for relation in self._relations:
@@ -283,6 +284,7 @@ class ClusterProvider(Object):
                     ca_cert=ca_cert,
                     server_cert=server_cert,
                     privkey_secret_id=privkey_secret_id,
+                    tracing_receivers=tracing_receivers,
                 )
                 local_app_databag.dump(relation.data[self.model.app])
 
@@ -300,7 +302,7 @@ class ClusterProvider(Object):
             if role in self._meta_roles:
                 expanded_roles.update(self._meta_roles[role])
             else:
-                expanded_roles.update(role)
+                expanded_roles.update({role})
         return expanded_roles
 
     def gather_addresses_by_role(self) -> Dict[str, Set[str]]:
@@ -327,7 +329,6 @@ class ClusterProvider(Object):
                 except DataValidationError as e:
                     log.info(f"invalid databag contents: {e}")
                     continue
-
         return data
 
     def gather_addresses(self) -> Set[str]:
@@ -454,7 +455,8 @@ class ClusterRequirer(Object):
 
         try:
             ClusterRequirerUnitData.load(unit_data)
-            ClusterRequirerAppData.load(app_data)
+            if self._charm.unit.is_leader():
+                ClusterRequirerAppData.load(app_data)
         except DataValidationError as e:
             log.info(f"invalid databag contents: {e}")
             return False
@@ -529,3 +531,10 @@ class ClusterRequirer(Object):
             "server_cert": data.server_cert,
             "privkey_secret_id": data.privkey_secret_id,
         }
+
+    def get_tracing_receivers(self) -> Optional[Dict[str, str]]:
+        """Fetch the tracing receivers from the coordinator databag."""
+        data = self._get_data_from_coordinator()
+        if data:
+            return data.tracing_receivers or {}
+        return {}
