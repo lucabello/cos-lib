@@ -285,6 +285,7 @@ class Worker(ops.Object):
         """Restart the pebble service or start if not already running."""
         if not self._container.exists(CONFIG_FILE):
             logger.error("cannot restart worker: config file doesn't exist (yet).")
+            return
 
         if not self.roles:
             logger.debug("cannot restart worker: no roles have been configured.")

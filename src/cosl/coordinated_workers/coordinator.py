@@ -305,6 +305,11 @@ class Coordinator(ops.Object):
         return True
 
     @property
+    def can_handle_events(self) -> bool:
+        """Check whether the coordinaator should handle events."""
+        return self.cluster.has_workers and self.is_coherent and self.s3_ready
+
+    @property
     def hostname(self) -> str:
         """Unit's hostname."""
         return socket.getfqdn()
@@ -329,26 +334,29 @@ class Coordinator(ops.Object):
     def _s3_config(self) -> Dict[str, Any]:
         """The s3 configuration from relation data.
 
+        The configuration is adapted to a drop-in format for the HA workers to use.
+
         Raises:
             S3NotFoundError: The s3 integration is inactive.
         """
-        s3_config = self.s3_requirer.get_s3_connection_info()
+        s3_data = self.s3_requirer.get_s3_connection_info()
+        s3_config: Dict[str, Any] = {}
         if not (
-            s3_config
-            and "bucket" in s3_config
-            and "endpoint" in s3_config
-            and "access-key" in s3_config
-            and "secret-key" in s3_config
+            s3_data
+            and "bucket" in s3_data
+            and "endpoint" in s3_data
+            and "access-key" in s3_data
+            and "secret-key" in s3_data
         ):
             raise S3NotFoundError("s3 integration inactive")
-        s3_config["insecure"] = "false" if s3_config["endpoint"].startswith("https://") else "true"
+        s3_config["insecure"] = not s3_data["endpoint"].startswith("https://")
         s3_config["endpoint"] = re.sub(
-            rf"^{urlparse(s3_config['endpoint']).scheme}://", "", s3_config["endpoint"]
+            rf"^{urlparse(s3_data['endpoint']).scheme}://", "", s3_data["endpoint"]
         )
-        s3_config["region"] = s3_config.get("region", "")
-        s3_config["access_key_id"] = s3_config.pop("access-key")
-        s3_config["secret_access_key"] = s3_config.pop("secret-key")
-        s3_config["bucket_name"] = s3_config.pop("bucket")
+        s3_config["region"] = s3_data.get("region", "")
+        s3_config["access_key_id"] = s3_data.pop("access-key")
+        s3_config["secret_access_key"] = s3_data.pop("secret-key")
+        s3_config["bucket_name"] = s3_data.pop("bucket")
         return s3_config
 
     @property
