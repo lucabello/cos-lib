@@ -268,11 +268,16 @@ class Worker(ops.Object):
             self._container.push(KEY_FILE, private_key or "", make_dirs=True)
             self._container.push(CLIENT_CA_FILE, ca_cert or "", make_dirs=True)
             self._container.push(ca_cert_path, ca_cert or "", make_dirs=True)
+
+            # Save the cacert in the charm container for charm traces
+            ca_cert_path.write_text(ca_cert)
         else:
             self._container.remove_path(CERT_FILE, recursive=True)
             self._container.remove_path(KEY_FILE, recursive=True)
             self._container.remove_path(CLIENT_CA_FILE, recursive=True)
             self._container.remove_path(ca_cert_path, recursive=True)
+
+            # Remove from charm container
             ca_cert_path.unlink(missing_ok=True)
 
         # FIXME: uncomment as soon as the nginx image contains the ca-certificates package
