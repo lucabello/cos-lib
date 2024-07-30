@@ -346,20 +346,22 @@ class ManualLogForwarder(ops.Object):
             loki_endpoints = {}
 
         for container in self._charm.unit.containers.values():
-            _PebbleLogClient.disable_inactive_endpoints(
-                container=container,
-                active_endpoints=loki_endpoints,
-                topology=self._topology,
-            )
-            _PebbleLogClient.enable_endpoints(
-                container=container, active_endpoints=loki_endpoints, topology=self._topology
-            )
+            if container.can_connect():
+                _PebbleLogClient.disable_inactive_endpoints(
+                    container=container,
+                    active_endpoints=loki_endpoints,
+                    topology=self._topology,
+                )
+                _PebbleLogClient.enable_endpoints(
+                    container=container, active_endpoints=loki_endpoints, topology=self._topology
+                )
 
     def disable_logging(self, _: Optional[ops.EventBase] = None):
         """Disable all log forwarding."""
         # This is currently necessary because, after a relation broken, the charm can still see
         # the Loki endpoints in the relation data.
         for container in self._charm.unit.containers.values():
-            _PebbleLogClient.disable_inactive_endpoints(
-                container=container, active_endpoints={}, topology=self._topology
-            )
+            if container.can_connect():
+                _PebbleLogClient.disable_inactive_endpoints(
+                    container=container, active_endpoints={}, topology=self._topology
+                )
