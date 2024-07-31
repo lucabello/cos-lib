@@ -500,6 +500,7 @@ class ClusterRequirer(Object):
                 data = coordinator_databag
             except DataValidationError as e:
                 log.info(f"invalid databag contents: {e}")
+                return None  # explicit is better than implicit
 
         return data
 

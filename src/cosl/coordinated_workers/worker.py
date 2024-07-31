@@ -8,7 +8,7 @@ import re
 import socket
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypedDict
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 
 import ops
 import yaml
@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 _EndpointMapping = TypedDict("_EndpointMapping", {"cluster": str}, total=True)
 """Mapping of the relation endpoint names that the charms uses, as defined in metadata.yaml."""
+
+ROOT_CA_CERT = Path("/usr/local/share/ca-certificates/ca.crt")
 
 
 class Worker(ops.Object):
@@ -144,20 +146,27 @@ class Worker(ops.Object):
     # Utility functions
     @property
     def roles(self) -> List[str]:
-        """Return a list of the roles this worker should take on."""
+        """Return a list of the roles this worker should take on.
+
+        Expects that the charm defines a set of roles by config like:
+            "role-a": bool
+            "role-b": bool
+            "role-b": bool
+        If this is not the case, it will raise an error.
+        """
         config = self._charm.config
 
-        roles: List[str] = [
-            role.removeprefix("role-")
-            for role in config.keys()
-            if isinstance(config[role], bool) and config[role]
+        role_config_options = [option for option in config.keys() if option.startswith("role-")]
+        if not role_config_options:
+            raise RuntimeError(
+                "The charm should define a set of `role-X` config "
+                "options for it to use the Worker."
+            )
+
+        active_roles: List[str] = [
+            role.removeprefix("role-") for role in role_config_options if config[role] is True
         ]
-
-        roles.extend(
-            [config[role] for role in config.keys() if not isinstance(config[role], bool)]
-        )
-
-        return roles
+        return active_roles
 
     def _update_config(self) -> None:
         """Update the worker config and restart the workload if necessary."""
@@ -254,8 +263,6 @@ class Worker(ops.Object):
         if not self._container.can_connect():
             return False
 
-        ca_cert_path = Path("/usr/local/share/ca-certificates/ca.crt")
-
         if tls_data := self.cluster.get_tls_data():
             private_key_secret = self.model.get_secret(id=tls_data["privkey_secret_id"])
             private_key = private_key_secret.get_content().get("private-key")
@@ -267,18 +274,18 @@ class Worker(ops.Object):
             self._container.push(CERT_FILE, server_cert or "", make_dirs=True)
             self._container.push(KEY_FILE, private_key or "", make_dirs=True)
             self._container.push(CLIENT_CA_FILE, ca_cert or "", make_dirs=True)
-            self._container.push(ca_cert_path, ca_cert or "", make_dirs=True)
+            self._container.push(ROOT_CA_CERT, ca_cert or "", make_dirs=True)
 
             # Save the cacert in the charm container for charm traces
-            ca_cert_path.write_text(ca_cert)
+            ROOT_CA_CERT.write_text(ca_cert)
         else:
             self._container.remove_path(CERT_FILE, recursive=True)
             self._container.remove_path(KEY_FILE, recursive=True)
             self._container.remove_path(CLIENT_CA_FILE, recursive=True)
-            self._container.remove_path(ca_cert_path, recursive=True)
+            self._container.remove_path(ROOT_CA_CERT, recursive=True)
 
             # Remove from charm container
-            ca_cert_path.unlink(missing_ok=True)
+            ROOT_CA_CERT.unlink(missing_ok=True)
 
         # FIXME: uncomment as soon as the nginx image contains the ca-certificates package
         # self._container.exec(["update-ca-certificates", "--fresh"]).wait()
@@ -313,6 +320,50 @@ class Worker(ops.Object):
         if result := re.search(r"[Vv]ersion:?\s*(\S+)", version_output):
             return result.group(1)
         return None
+
+    def charm_tracing_config(self) -> Tuple[Optional[str], Optional[str]]:
+        """Get the charm tracing configuration from the coordinator.
+
+        Usage:
+          assuming you are using charm_tracing >= v1.9:
+        >>> from ops import CharmBase
+        >>> from lib.charms.tempo_k8s.v1.charm_tracing import trace_charm
+        >>> from lib.charms.tempo_k8s.v2.tracing import charm_tracing_config
+        >>> @trace_charm(tracing_endpoint="my_endpoint", cert_path="cert_path")
+        >>> class MyCharm(CharmBase):
+        >>>     def __init__(self, ...):
+        >>>         self.worker = Worker(...)
+        >>>         self.my_endpoint, self.cert_path = self.worker.charm_tracing_config()
+        """
+        receivers = self.cluster.get_tracing_receivers()
+
+        if not receivers:
+            return None, None
+
+        endpoint = receivers.get("otlp_http")
+        if not endpoint:
+            return None, None
+
+        is_https = endpoint.startswith("https://")
+
+        tls_data = self.cluster.get_tls_data()
+        server_ca_cert = tls_data.get("server_cert") if tls_data else None
+
+        if is_https:
+            if server_ca_cert is None:
+                raise RuntimeError(
+                    "Cannot send traces to an https endpoint without a certificate."
+                )
+            elif not ROOT_CA_CERT.exists():
+                # if endpoint is https and we have a tls integration BUT we don't have the
+                # server_cert on disk yet (this could race with _update_tls_certificates):
+                # put it there and proceed
+                ROOT_CA_CERT.parent.mkdir(parents=True, exist_ok=True)
+                ROOT_CA_CERT.write_text(server_ca_cert)
+
+            return endpoint, str(ROOT_CA_CERT)
+        else:
+            return endpoint, None
 
 
 class ManualLogForwarder(ops.Object):
