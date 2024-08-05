@@ -39,6 +39,10 @@ _EndpointMapping = TypedDict("_EndpointMapping", {"cluster": str}, total=True)
 ROOT_CA_CERT = Path("/usr/local/share/ca-certificates/ca.crt")
 
 
+class WorkerError(Exception):
+    """Base class for exceptions raised by this module."""
+
+
 class Worker(ops.Object):
     """Charming worker."""
 
@@ -51,7 +55,7 @@ class Worker(ops.Object):
         charm: ops.CharmBase,
         name: str,
         pebble_layer: Callable[["Worker"], Layer],
-        endpoints: Optional[_EndpointMapping] = None,
+        endpoints: _EndpointMapping,
     ):
         """Constructor for a Worker object.
 
@@ -158,13 +162,13 @@ class Worker(ops.Object):
 
         role_config_options = [option for option in config.keys() if option.startswith("role-")]
         if not role_config_options:
-            raise RuntimeError(
+            raise WorkerError(
                 "The charm should define a set of `role-X` config "
                 "options for it to use the Worker."
             )
 
         active_roles: List[str] = [
-            role.removeprefix("role-") for role in role_config_options if config[role] is True
+            role[5:] for role in role_config_options if config[role] is True
         ]
         return active_roles
 
