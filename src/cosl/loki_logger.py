@@ -45,7 +45,9 @@ class LokiEmitter:
         ("-", "_"),
     )
 
-    def __init__(self, url: str, labels: Optional[dict] = None, cert: Optional[str] = None):
+    def __init__(
+        self, url: str, labels: Optional[Dict[str, str]] = None, cert: Optional[str] = None
+    ):
         """Create new Loki emitter.
 
         Arguments:
@@ -56,7 +58,7 @@ class LokiEmitter:
 
         """
         #: Tags that will be added to all records handled by this handler.
-        self.labels = labels or {}
+        self.labels: Dict[str, str] = labels or {}
         #: Loki JSON push endpoint (e.g `http://127.0.0.1/loki/api/v1/push`)
         self.url = url
         #: Optional cert for TLS auth
@@ -78,7 +80,7 @@ class LokiEmitter:
             resp = self._send_request(req, jsondata_encoded)
         except urllib.error.HTTPError as e:
             if not self._error_notified_once:
-                logger.error(f"error pushing logs to {self.url}: {e.status, e.reason}")
+                logger.error(f"error pushing logs to {self.url}: {e.status, e.reason}")  # type: ignore
                 self._error_notified_once = True
             return
 
@@ -87,7 +89,7 @@ class LokiEmitter:
                 "Unexpected Loki API response status code: {0}".format(resp.status_code)
             )
 
-    def build_payload(self, record: logging.LogRecord, line: str) -> dict:
+    def build_payload(self, record: logging.LogRecord, line: str) -> Dict[str, Any]:
         """Build JSON payload with a log entry."""
         labels = self.build_labels(record)
         ns = 1e9
@@ -108,9 +110,11 @@ class LokiEmitter:
             label = label.replace(char_from, char_to)
         return "".join(char for char in label if char in self.label_allowed_chars)
 
-    def build_labels(self, record: logging.LogRecord) -> Dict[str, Any]:
-        """Return labels that must be send to Loki with a log record."""
-        labels = dict(self.labels) if isinstance(self.labels, ConvertingDict) else self.labels
+    def build_labels(self, record: logging.LogRecord) -> Dict[str, str]:
+        """Return labels that must be sent to Loki with a log record."""
+        labels: Dict[str, str] = (
+            dict(self.labels) if isinstance(self.labels, ConvertingDict) else self.labels
+        )
         labels = cast(Dict[str, Any], copy.deepcopy(labels))
         labels[self.level_label] = record.levelname.lower()
         labels[self.logger_label] = record.name
@@ -136,7 +140,7 @@ class LokiHandler(logging.Handler):
     def __init__(
         self,
         url: str,
-        labels: Optional[dict] = None,
+        labels: Optional[Dict[str, str]] = None,
         # username, password tuple
         cert: Optional[str] = None,
     ):

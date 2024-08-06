@@ -41,7 +41,6 @@ from charms.tempo_k8s.v2.tracing import TracingEndpointRequirer
 
 logger = logging.getLogger(__name__)
 
-
 # The paths of the base rules to be rendered in CONSOLIDATED_ALERT_RULES_PATH
 NGINX_ORIGINAL_ALERT_RULES_PATH = "./src/prometheus_alert_rules/nginx"
 WORKER_ORIGINAL_ALERT_RULES_PATH = "./src/prometheus_alert_rules/workers"
@@ -108,7 +107,7 @@ class Coordinator(ops.Object):
         nginx_options: Optional[NginxMappingOverrides] = None,
         is_coherent: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
         is_recommended: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
-        tracing_receivers: Optional[Callable[[], Dict[str, str]]] = None,
+        tracing_receivers: Optional[Callable[[], Optional[Dict[str, str]]]] = None,
     ):
         """Constructor for a Coordinator object.
 
@@ -567,27 +566,19 @@ class Coordinator(ops.Object):
 
         if not self._charm.unit.is_leader():
             return
+
         # we share the certs in plaintext as they're not sensitive information
         # On every function call, we always publish everything to the databag; however, if there
         # are no changes, Juju will notice there's no delta and do nothing
         self.cluster.publish_data(
             worker_config=self._workers_config_getter(),
             loki_endpoints=self.loki_endpoints_by_unit,
-            **(
-                {
-                    "ca_cert": self.cert_handler.ca_cert,
-                    "server_cert": self.cert_handler.server_cert,
-                    "privkey_secret_id": self.cluster.grant_privkey(VAULT_SECRET_LABEL),
-                }
-                if self.tls_available
-                else {}
-            ),
-            **(
-                {
-                    "tracing_receivers": self._tracing_receivers_getter(),
-                }
-                if self._tracing_receivers_getter
-                else {}
+            # all arguments below are optional:
+            ca_cert=self.cert_handler.ca_cert,
+            server_cert=self.cert_handler.server_cert,
+            privkey_secret_id=self.cluster.grant_privkey(VAULT_SECRET_LABEL),
+            tracing_receivers=(
+                self._tracing_receivers_getter() if self._tracing_receivers_getter else None
             ),
         )
 

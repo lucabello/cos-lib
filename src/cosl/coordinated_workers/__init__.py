@@ -18,7 +18,7 @@ current_package = __package__
 
 
 class _LazyModule:
-    def __init__(self, module_name):
+    def __init__(self, module_name: str):
         self.module_name = module_name
         self.module = None
 
@@ -27,7 +27,7 @@ class _LazyModule:
             self.module = importlib.import_module(self.module_name, current_package)
         return self.module
 
-    def __getattr__(self, item):
+    def __getattr__(self, item: str):
         module = self._load()
         return getattr(module, item)
 

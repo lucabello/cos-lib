@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 import lzma
-from typing import Dict, Union
+from typing import Any, Dict, Union
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class GrafanaDashboard(str):
         encoded = base64.b64encode(lzma.compress(raw_json)).decode("utf-8")
         return GrafanaDashboard(encoded)
 
-    def _deserialize(self) -> Dict:
+    def _deserialize(self) -> Dict[str, Any]:
         try:
             raw = lzma.decompress(base64.b64decode(self.encode("utf-8"))).decode()
             return json.loads(raw)

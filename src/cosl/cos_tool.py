@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import yaml
 from typing_extensions import Concatenate, ParamSpec, TypeVar
@@ -48,7 +48,7 @@ class CosTool:
 
     _path = None
     _disabled = False
-    query_type = None  # type: Union[QueryType, None]
+    query_type: Union[QueryType, None] = None
 
     def __init__(self, default_query_type: Optional[QueryType] = None):
         self.query_type = default_query_type

@@ -38,15 +38,14 @@ class MandatoryRelationPairs:
 
         If nothing is missing for a given relation, then it won't be listed (as a key) in the dict.
         """
-        # From all relations currently present, get a list of 'incoming' relations that must
+        # From all relations currently present, get a set of 'incoming' relations that must
         # have matching 'outgoing' relations.
-        relations_present = set(relations_present or [])
-        rels = relations_present.intersection(self._pairs.keys())
+        relations_incoming: Set[str] = set(relations_present).intersection(self._pairs.keys())
 
         # Same shape as `self._pairs`
         missing = {
             rel: [mandatory.difference(relations_present) for mandatory in self._pairs[rel]]
-            for rel in rels
+            for rel in relations_incoming
         }
 
         # If any rel in missing has an empty set, it means that it has at least one combo of
