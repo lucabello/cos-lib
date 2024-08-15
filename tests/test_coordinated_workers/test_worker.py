@@ -1,10 +1,11 @@
 import ops
 import pytest
-from cosl.coordinated_workers.worker import Worker
 from ops import Framework
 from ops.pebble import Layer
 from scenario import Container, Context, State
 from scenario.runtime import UncaughtCharmError
+
+from cosl.coordinated_workers.worker import Worker
 
 
 class MyCharm(ops.CharmBase):
