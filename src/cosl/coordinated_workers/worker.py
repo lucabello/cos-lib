@@ -6,6 +6,8 @@
 import logging
 import re
 import socket
+import urllib.request
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
@@ -13,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 import ops
 import yaml
 from ops.model import ActiveStatus, BlockedStatus, WaitingStatus
-from ops.pebble import Layer, PathError, ProtocolError
+from ops.pebble import Check, Layer, PathError, Plan, ProtocolError
 
 from cosl import JujuTopology
 from cosl.coordinated_workers.interface import ClusterRequirer
@@ -43,6 +45,14 @@ class WorkerError(Exception):
     """Base class for exceptions raised by this module."""
 
 
+class ServiceEndpointStatus(Enum):
+    """Status of the worker service managed by pebble."""
+
+    starting = "starting"
+    up = "up"
+    down = "down"
+
+
 class Worker(ops.Object):
     """Charming worker."""
 
@@ -56,6 +66,7 @@ class Worker(ops.Object):
         name: str,
         pebble_layer: Callable[["Worker"], Layer],
         endpoints: _EndpointMapping,
+        readiness_check_endpoint: Optional[str] = None,
     ):
         """Constructor for a Worker object.
 
@@ -64,6 +75,8 @@ class Worker(ops.Object):
             name: The name of the workload container and service.
             pebble_layer: The pebble layer of the workload.
             endpoints: Endpoint names for coordinator relations, as defined in metadata.yaml.
+            readiness_check_endpoint: URL to probe with a pebble check to determine
+                whether the worker node is ready. Passing None will effectively disable it.
         """
         super().__init__(charm, key="worker")
         self._charm = charm
@@ -73,6 +86,7 @@ class Worker(ops.Object):
         self._container = self._charm.unit.get_container(name)
 
         self._endpoints = endpoints
+        self._readiness_check_endpoint = readiness_check_endpoint
 
         self.cluster = ClusterRequirer(
             charm=self._charm,
@@ -99,12 +113,33 @@ class Worker(ops.Object):
         self.framework.observe(self.cluster.on.removed, self._log_forwarder.disable_logging)
 
         self.framework.observe(self._charm.on[self._name].pebble_ready, self._on_pebble_ready)
+        self.framework.observe(
+            self._charm.on[name].pebble_check_failed, self._on_pebble_check_failed
+        )
+        self.framework.observe(
+            self._charm.on[name].pebble_check_recovered, self._on_pebble_check_recovered
+        )
 
     # Event handlers
-
     def _on_pebble_ready(self, _: ops.PebbleReadyEvent):
         self._charm.unit.set_workload_version(self.running_version() or "")
         self._update_config()
+
+    def _on_pebble_check_failed(self, event: ops.PebbleCheckFailedEvent):
+        if event.info.name == "ready":
+            logger.warning(
+                f"Pebble `ready` check on {self._readiness_check_endpoint} started to fail: "
+                f"worker node is down."
+            )
+            # collect-status will detect that we're not ready and set waiting status.
+
+    def _on_pebble_check_recovered(self, event: ops.PebbleCheckFailedEvent):
+        if event.info.name == "ready":
+            logger.info(
+                f"Pebble `ready` check on {self._readiness_check_endpoint} is passing: "
+                f"worker node is up."
+            )
+            # collect-status will detect that we're ready and set active status.
 
     def _on_worker_config_received(self, _: ops.EventBase):
         self._update_config()
@@ -126,6 +161,69 @@ class Worker(ops.Object):
         if self.cluster.get_worker_config():
             self._update_worker_config()
 
+    @property
+    def status(self) -> ServiceEndpointStatus:
+        """Determine the status of the service's endpoint."""
+        check_endpoint = self._readiness_check_endpoint
+        if not check_endpoint:
+            raise WorkerError(
+                "cannot check readiness without a readiness_check_endpoint configured. "
+                "Pass one to Worker on __init__."
+            )
+
+        if not self._container.can_connect():
+            logger.debug("Container cannot connect. Skipping status check.")
+            return ServiceEndpointStatus.down
+
+        if not self._running_worker_config():
+            logger.debug("Config file not on disk. Skipping status check.")
+            return ServiceEndpointStatus.down
+
+        # we really don't want this code to raise errors, so we blanket catch all.
+        try:
+            layer: Layer = self._pebble_layer()
+            services = self._container.get_services(*layer.services.keys())
+            running_status = {name: svc.is_running() for name, svc in services.items()}
+            if not all(running_status.values()):
+                if any(running_status.values()):
+                    starting_services = tuple(
+                        name for name, running in running_status.items() if not running
+                    )
+                    logger.info(f"Some services are not running: {starting_services}.")
+                    return ServiceEndpointStatus.starting
+
+                logger.info("All services are down.")
+                return ServiceEndpointStatus.down
+
+            with urllib.request.urlopen(check_endpoint) as response:
+                html: bytes = response.read()
+
+            # ready response should simply be a string:
+            #   "ready"
+            raw_out = html.decode("utf-8").strip()
+            if raw_out == "ready":
+                return ServiceEndpointStatus.up
+
+            # depending on the workload, we get something like:
+            #   Some services are not Running:
+            #   Starting: 1
+            #   Running: 16
+            # (tempo)
+            #   Ingester not ready: waiting for 15s after being ready
+            # (mimir)
+
+            # anything that isn't 'ready' but also is a 2xx response will be interpreted as:
+            # we're not ready yet, but we're working on it.
+            logger.debug(f"GET {check_endpoint} returned: {raw_out!r}.")
+            return ServiceEndpointStatus.starting
+
+        except Exception:
+            logger.exception(
+                "Error while getting worker status. "
+                "This could mean that the worker is still starting."
+            )
+            return ServiceEndpointStatus.down
+
     def _on_collect_status(self, e: ops.CollectStatusEvent):
         if not self._container.can_connect():
             e.add_status(WaitingStatus(f"Waiting for `{self._name}` container"))
@@ -139,6 +237,16 @@ class Worker(ops.Object):
             e.add_status(
                 BlockedStatus("Invalid or no roles assigned: please configure some valid roles")
             )
+
+        if self._readiness_check_endpoint:
+            status = self.status
+            if status == ServiceEndpointStatus.starting:
+                e.add_status(WaitingStatus("Starting..."))
+            elif status == ServiceEndpointStatus.down:
+                e.add_status(BlockedStatus("node down (see logs)"))
+        else:
+            logger.debug("Unable to determine worker readiness: missing an endpoint to check.")
+
         e.add_status(
             ActiveStatus(
                 "(all roles) ready."
@@ -195,17 +303,34 @@ class Worker(ops.Object):
         if not self.roles:
             return False
 
-        current_layer = self._container.get_plan()
+        current_plan = self._container.get_plan()
         new_layer = self._pebble_layer()
+        self._add_readiness_check(new_layer)
 
-        if (
-            "services" not in current_layer.to_dict()
-            or current_layer.services != new_layer.services
-        ):
+        def diff(layer: Layer, plan: Plan):
+            layer_dct = layer.to_dict()
+            plan_dct = plan.to_dict()
+            for key in ["checks", "services"]:
+                if layer_dct.get(key) != plan_dct.get(key):
+                    return True
+            return False
+
+        if diff(new_layer, current_plan):
+            logger.debug("Adding new layer to pebble...")
             self._container.add_layer(self._name, new_layer, combine=True)
             return True
 
         return False
+
+    def _add_readiness_check(self, new_layer: Layer):
+        """Add readiness check to a pebble layer."""
+        if not self._readiness_check_endpoint:
+            # skip
+            return
+
+        new_layer.checks["ready"] = Check(
+            "ready", {"override": "replace", "http": {"url": self._readiness_check_endpoint}}
+        )
 
     def _update_cluster_relation(self) -> None:
         """Publish all the worker information to relation data."""
