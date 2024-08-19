@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 
 import ops
+import tenacity
 import yaml
+from ops import MaintenanceStatus
 from ops.model import ActiveStatus, BlockedStatus, WaitingStatus
 from ops.pebble import Check, Layer, PathError, Plan, ProtocolError
 
@@ -72,7 +74,7 @@ class Worker(ops.Object):
 
         Args:
             charm: The worker charm object.
-            name: The name of the workload container and service.
+            name: The name of the workload container.
             pebble_layer: The pebble layer of the workload.
             endpoints: Endpoint names for coordinator relations, as defined in metadata.yaml.
             readiness_check_endpoint: URL to probe with a pebble check to determine
@@ -283,14 +285,24 @@ class Worker(ops.Object):
     def _update_config(self) -> None:
         """Update the worker config and restart the workload if necessary."""
         restart = any(
-            [
+            (
                 self._update_tls_certificates(),
                 self._update_worker_config(),
                 self._set_pebble_layer(),
-            ]
+            )
         )
 
         if restart:
+            logger.debug("Config changed. Restarting worker services...")
+            self.restart()
+
+        # this can happen if s3 wasn't ready (server gave error) when we processed an earlier event
+        # causing the worker service to die on startup (exited quickly with code...)
+        # so we try to restart it now.
+        # TODO: would be nice if we could be notified of when s3 starts working, so we don't have to
+        #  wait for an update-status and can listen to that instead.
+        elif not all(svc.is_running() for svc in self._container.get_services().values()):
+            logger.debug("Some services are not running. Starting them now...")
             self.restart()
 
     def _set_pebble_layer(self) -> bool:
@@ -422,21 +434,59 @@ class Worker(ops.Object):
 
         return True
 
+    SERVICE_START_RETRY_STOP = tenacity.stop_after_delay(60 * 15)
+    SERVICE_START_RETRY_WAIT = tenacity.wait_fixed(60)
+    SERVICE_START_RETRY_IF = tenacity.retry_if_exception_type(ops.pebble.ChangeError)
+
     def restart(self):
-        """Restart the pebble service or start if not already running."""
+        """Restart the pebble service or start it if not already running.
+
+        Default timeout is 15 minutes. Configure it by setting this class attr:
+        >>> Worker.SERVICE_START_RETRY_STOP = tenacity.stop_after_delay(60 * 30)  # 30 minutes
+        You can also configure SERVICE_START_RETRY_WAIT and SERVICE_START_RETRY_IF.
+
+        This method will raise an exception if it fails to start the service within a
+        specified timeframe. This will presumably bring the charm in error status, so
+        that juju will retry the last emitted hook until it finally succeeds.
+
+        The assumption is that the state we are in when this method is called is consistent.
+        The reason why we're failing to restart is dependent on some external factor (such as network,
+        the reachability of a remote API, or the readiness of an external service the workload depends on).
+        So letting juju retry the same hook will get us unstuck as soon as that contingency is resolved.
+
+        See https://discourse.charmhub.io/t/its-probably-ok-for-a-unit-to-go-into-error-state/13022
+        """
         if not self._container.exists(CONFIG_FILE):
             logger.error("cannot restart worker: config file doesn't exist (yet).")
             return
-
         if not self.roles:
             logger.debug("cannot restart worker: no roles have been configured.")
             return
 
         try:
-            self._container.restart(self._name)
-        except ops.pebble.ChangeError as e:
-            logger.error(f"failed to (re)start worker job: {e}", exc_info=True)
-            return
+            for attempt in tenacity.Retrying(
+                # this method may fail with ChangeError (exited quickly with code...)
+                retry=self.SERVICE_START_RETRY_IF,
+                # give this method some time to pass (by default 15 minutes)
+                stop=self.SERVICE_START_RETRY_STOP,
+                # wait 1 minute between tries
+                wait=self.SERVICE_START_RETRY_WAIT,
+                # if you don't succeed raise the last caught exception when you're done
+                reraise=True,
+            ):
+                with attempt:
+                    self._charm.unit.status = MaintenanceStatus(
+                        f"restarting... (attempt #{attempt.retry_state.attempt_number})"
+                    )
+                    # restart all services that our layer is responsible for
+                    self._container.restart(*self._pebble_layer().services.keys())
+
+        except ops.pebble.ChangeError:
+            logger.error(
+                "failed to (re)start worker jobs. This usually means that an external resource (such as s3) "
+                "that the software needs to start is not available."
+            )
+            raise
 
     def running_version(self) -> Optional[str]:
         """Get the running version from the worker process."""
