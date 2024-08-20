@@ -11,9 +11,14 @@ from cosl.coordinated_workers.interface import ClusterProviderAppData
 from cosl.coordinated_workers.worker import Worker, WorkerError
 
 
+@pytest.fixture(params=[True, False])
+def tls(request):
+    return request.param
+
+
 @contextmanager
-def _urlopen_patch(url: str, resp):
-    if url == "http://localhost:3200/ready":
+def _urlopen_patch(url: str, resp: str, tls: bool):
+    if url == f"{'https' if tls else 'http'}://localhost:3200/ready":
         mm = MagicMock()
         mm.read = MagicMock(return_value=resp.encode("utf-8"))
         yield mm
@@ -22,7 +27,7 @@ def _urlopen_patch(url: str, resp):
 
 
 @pytest.fixture
-def ctx():
+def ctx(tls):
     class MyCharm(CharmBase):
         def __init__(self, framework: Framework):
             super().__init__(framework)
@@ -31,8 +36,11 @@ def ctx():
                 "workload",
                 lambda _: Layer(""),
                 {"cluster": "cluster"},
-                readiness_check_endpoint="http://localhost:3200/ready",
+                readiness_check_endpoint=self._readiness_check_endpoint,
             )
+
+        def _readiness_check_endpoint(self, _):
+            return f"{'https' if tls else 'http'}://localhost:3200/ready"
 
     return Context(
         MyCharm,
@@ -63,16 +71,17 @@ def base_state(request):
 
 
 @contextmanager
-def endpoint_starting():
+def endpoint_starting(tls):
     with patch(
-        "urllib.request.urlopen", new=partial(_urlopen_patch, resp="foo\nStarting: 10\n bar")
+        "urllib.request.urlopen",
+        new=partial(_urlopen_patch, tls=tls, resp="foo\nStarting: 10\n bar"),
     ):
         yield
 
 
 @contextmanager
-def endpoint_ready():
-    with patch("urllib.request.urlopen", new=partial(_urlopen_patch, resp="ready")):
+def endpoint_ready(tls):
+    with patch("urllib.request.urlopen", new=partial(_urlopen_patch, tls=tls, resp="ready")):
         yield
 
 
@@ -110,9 +119,9 @@ def test_status_check_no_config(ctx, base_state, caplog):
     assert "Config file not on disk. Skipping status check." in caplog.messages
 
 
-def test_status_check_starting(ctx, base_state):
+def test_status_check_starting(ctx, base_state, tls):
     # GIVEN getting the status returns "Starting: X"
-    with endpoint_starting():
+    with endpoint_starting(tls):
         # AND GIVEN that the config is on disk
         with config_on_disk():
             # AND GIVEN that the container can connect
@@ -123,9 +132,9 @@ def test_status_check_starting(ctx, base_state):
     assert state_out.unit_status == WaitingStatus("Starting...")
 
 
-def test_status_check_ready(ctx, base_state):
+def test_status_check_ready(ctx, base_state, tls):
     # GIVEN getting the status returns "ready"
-    with endpoint_ready():
+    with endpoint_ready(tls):
         # AND GIVEN that the config is on disk
         with config_on_disk():
             # AND GIVEN that the container can connect
@@ -170,7 +179,7 @@ def test_status_no_endpoint(ctx, base_state, caplog):
     # THEN the charm sets Active: ready, even though we have no idea whether the endpoint is ready.
     assert state_out.unit_status == ActiveStatus("read,write ready.")
     # AND THEN the charm logs that we can't determine the readiness
-    assert "Unable to determine worker readiness: missing an endpoint to check." in caplog.messages
+    assert "Unable to determine worker readiness: no endpoint given." in caplog.messages
 
 
 def test_access_status_no_endpoint_raises():

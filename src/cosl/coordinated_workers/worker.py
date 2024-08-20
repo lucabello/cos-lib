@@ -10,7 +10,7 @@ import urllib.request
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, Union
 
 import ops
 import tenacity
@@ -68,7 +68,7 @@ class Worker(ops.Object):
         name: str,
         pebble_layer: Callable[["Worker"], Layer],
         endpoints: _EndpointMapping,
-        readiness_check_endpoint: Optional[str] = None,
+        readiness_check_endpoint: Optional[Union[str, Callable[["Worker"], str]]] = None,
     ):
         """Constructor for a Worker object.
 
@@ -88,7 +88,12 @@ class Worker(ops.Object):
         self._container = self._charm.unit.get_container(name)
 
         self._endpoints = endpoints
-        self._readiness_check_endpoint = readiness_check_endpoint
+        # turn str to Callable[[Worker], str]
+        self._readiness_check_endpoint: Optional[Callable[[Worker], str]]
+        if isinstance(readiness_check_endpoint, str):
+            self._readiness_check_endpoint = lambda _: readiness_check_endpoint
+        else:
+            self._readiness_check_endpoint = readiness_check_endpoint
 
         self.cluster = ClusterRequirer(
             charm=self._charm,
@@ -129,18 +134,12 @@ class Worker(ops.Object):
 
     def _on_pebble_check_failed(self, event: ops.PebbleCheckFailedEvent):
         if event.info.name == "ready":
-            logger.warning(
-                f"Pebble `ready` check on {self._readiness_check_endpoint} started to fail: "
-                f"worker node is down."
-            )
+            logger.warning("Pebble `ready` check started to fail: " "worker node is down.")
             # collect-status will detect that we're not ready and set waiting status.
 
     def _on_pebble_check_recovered(self, event: ops.PebbleCheckFailedEvent):
         if event.info.name == "ready":
-            logger.info(
-                f"Pebble `ready` check on {self._readiness_check_endpoint} is passing: "
-                f"worker node is up."
-            )
+            logger.info("Pebble `ready` check is now passing: " "worker node is up.")
             # collect-status will detect that we're ready and set active status.
 
     def _on_worker_config_received(self, _: ops.EventBase):
@@ -197,7 +196,7 @@ class Worker(ops.Object):
                 logger.info("All services are down.")
                 return ServiceEndpointStatus.down
 
-            with urllib.request.urlopen(check_endpoint) as response:
+            with urllib.request.urlopen(check_endpoint(self)) as response:
                 html: bytes = response.read()
 
             # ready response should simply be a string:
@@ -240,14 +239,14 @@ class Worker(ops.Object):
                 BlockedStatus("Invalid or no roles assigned: please configure some valid roles")
             )
 
-        if self._readiness_check_endpoint:
+        try:
             status = self.status
             if status == ServiceEndpointStatus.starting:
                 e.add_status(WaitingStatus("Starting..."))
             elif status == ServiceEndpointStatus.down:
                 e.add_status(BlockedStatus("node down (see logs)"))
-        else:
-            logger.debug("Unable to determine worker readiness: missing an endpoint to check.")
+        except WorkerError:
+            logger.debug("Unable to determine worker readiness: no endpoint given.")
 
         e.add_status(
             ActiveStatus(
@@ -341,7 +340,7 @@ class Worker(ops.Object):
             return
 
         new_layer.checks["ready"] = Check(
-            "ready", {"override": "replace", "http": {"url": self._readiness_check_endpoint}}
+            "ready", {"override": "replace", "http": {"url": self._readiness_check_endpoint(self)}}
         )
 
     def _update_cluster_relation(self) -> None:
