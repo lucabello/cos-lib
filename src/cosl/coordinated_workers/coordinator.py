@@ -45,14 +45,20 @@ check_libs_installed(
     "charms.prometheus_k8s.v0.prometheus_scrape",
     "charms.loki_k8s.v1.loki_push_api",
     "charms.tempo_k8s.v2.tracing",
+    "charms.observability_libs.v0.kubernetes_compute_resources_patch",
 )
 
 from charms.data_platform_libs.v0.s3 import S3Requirer
 from charms.grafana_k8s.v0.grafana_dashboard import GrafanaDashboardProvider
 from charms.loki_k8s.v1.loki_push_api import LokiPushApiConsumer
+from charms.observability_libs.v0.kubernetes_compute_resources_patch import (
+    KubernetesComputeResourcesPatch,
+    adjust_resource_requirements,
+)
 from charms.observability_libs.v1.cert_handler import VAULT_SECRET_LABEL, CertHandler
 from charms.prometheus_k8s.v0.prometheus_scrape import MetricsEndpointProvider
 from charms.tempo_k8s.v2.tracing import TracingEndpointRequirer
+from lightkube.models.core_v1 import ResourceRequirements
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +115,17 @@ class ClusterRolesConfig:
         return set(self.minimal_deployment).issubset(set(cluster_roles))
 
 
+def _validate_container_name(
+    container_name: Optional[str],
+    resources_requests: Optional[Callable[["Coordinator"], Dict[str, str]]],
+):
+    """Raise `ValueError` if `resources_requests` is not None and `container_name` is None."""
+    if resources_requests is not None and container_name is None:
+        raise ValueError(
+            "Cannot have a None value for container_name while resources_requests is provided."
+        )
+
+
 _EndpointMapping = TypedDict(
     "_EndpointMapping",
     {
@@ -123,6 +140,15 @@ _EndpointMapping = TypedDict(
     total=True,
 )
 """Mapping of the relation endpoint names that the charms uses, as defined in metadata.yaml."""
+
+_ResourceLimitOptionsMapping = TypedDict(
+    "_ResourceLimitOptionsMapping",
+    {
+        "cpu_limit": str,
+        "memory_limit": str,
+    },
+)
+"""Mapping of the resources limit option names that the charms use, as defined in config.yaml."""
 
 
 class Coordinator(ops.Object):
@@ -146,6 +172,9 @@ class Coordinator(ops.Object):
         is_coherent: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
         is_recommended: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
         tracing_receivers: Optional[Callable[[], Optional[Dict[str, str]]]] = None,
+        resources_limit_options: Optional[_ResourceLimitOptionsMapping] = None,
+        resources_requests: Optional[Callable[["Coordinator"], Dict[str, str]]] = None,
+        container_name: Optional[str] = None,
     ):
         """Constructor for a Coordinator object.
 
@@ -163,6 +192,18 @@ class Coordinator(ops.Object):
             is_coherent: Custom coherency checker for a minimal deployment.
             is_recommended: Custom coherency checker for a recommended deployment.
             tracing_receivers: Endpoints to which the workload (and the worker charm) can push traces to.
+            resources_limit_options: A dictionary containing resources limit option names. The dictionary should include
+                "cpu_limit" and "memory_limit" keys with values as option names, as defined in the config.yaml.
+                If no dictionary is provided, the default option names "cpu_limit" and "memory_limit" would be used.
+            resources_requests: A function generating the resources "requests" portion to apply when patching a container using
+                KubernetesComputeResourcesPatch. The "limits" portion of the patch gets populated by setting
+                their respective config options in config.yaml.
+            container_name: The container for which to apply the resources requests & limits.
+                Required if `resources_requests` is provided.
+
+        Raises:
+        ValueError:
+            If `resources_requests` is not None and `container_name` is None, a ValueError is raised.
         """
         super().__init__(charm, key="coordinator")
         self._charm = charm
@@ -172,6 +213,7 @@ class Coordinator(ops.Object):
 
         self._endpoints = endpoints
 
+        _validate_container_name(container_name, resources_requests)
         self.roles_config = roles_config
 
         self.cluster = ClusterProvider(
@@ -184,6 +226,11 @@ class Coordinator(ops.Object):
         self._is_coherent = is_coherent
         self._is_recommended = is_recommended
         self._tracing_receivers_getter = tracing_receivers
+        self._resources_requests_getter = (
+            partial(resources_requests, self) if resources_requests is not None else None
+        )
+        self._container_name = container_name
+        self._resources_limit_options = resources_limit_options or {}
 
         self.nginx = Nginx(
             self._charm,
@@ -228,6 +275,17 @@ class Coordinator(ops.Object):
             self._charm,
             relation_name=self._endpoints["tracing"],
             protocols=["otlp_http"],
+        )
+
+        # Resources patch
+        self.resources_patch = (
+            KubernetesComputeResourcesPatch(
+                self._charm,
+                self._container_name,  # type: ignore
+                resource_reqs_func=self._adjust_resource_requirements,
+            )
+            if self._resources_requests_getter
+            else None
         )
 
         # We always listen to collect-status
@@ -555,6 +613,9 @@ class Coordinator(ops.Object):
         else:
             e.add_status(ops.ActiveStatus())
 
+        if self.resources_patch:
+            e.add_status(self.resources_patch.get_status())
+
     ###################
     # UTILITY METHODS #
     ###################
@@ -663,3 +724,16 @@ class Coordinator(ops.Object):
         os.makedirs(CONSOLIDATED_ALERT_RULES_PATH, exist_ok=True)
         self._render_workers_alert_rules()
         self._consolidate_nginx_alert_rules()
+
+    def _adjust_resource_requirements(self) -> ResourceRequirements:
+        """A method that gets called by `KubernetesComputeResourcesPatch` to adjust the resources requests and limits to patch."""
+        cpu_limit_key = self._resources_limit_options.get("cpu_limit", "cpu_limit")
+        memory_limit_key = self._resources_limit_options.get("memory_limit", "memory_limit")
+
+        limits = {
+            "cpu": self._charm.model.config.get(cpu_limit_key),
+            "memory": self._charm.model.config.get(memory_limit_key),
+        }
+        return adjust_resource_requirements(
+            limits, self._resources_requests_getter(), adhere_to_requests=True  # type: ignore
+        )
