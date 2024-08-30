@@ -29,7 +29,7 @@ import ops
 import yaml
 
 import cosl
-from cosl.coordinated_workers.interface import ClusterProvider
+from cosl.coordinated_workers.interface import ClusterProvider, RemoteWriteEndpoint
 from cosl.coordinated_workers.nginx import (
     Nginx,
     NginxMappingOverrides,
@@ -175,6 +175,7 @@ class Coordinator(ops.Object):
         resources_limit_options: Optional[_ResourceLimitOptionsMapping] = None,
         resources_requests: Optional[Callable[["Coordinator"], Dict[str, str]]] = None,
         container_name: Optional[str] = None,
+        remote_write_endpoints: Optional[Callable[[], List[RemoteWriteEndpoint]]] = None,
     ):
         """Constructor for a Coordinator object.
 
@@ -200,6 +201,8 @@ class Coordinator(ops.Object):
                 their respective config options in config.yaml.
             container_name: The container for which to apply the resources requests & limits.
                 Required if `resources_requests` is provided.
+            remote_write_endpoints: A function generating endpoints to which the workload
+                and the worker charm can push metrics to.
 
         Raises:
         ValueError:
@@ -231,6 +234,7 @@ class Coordinator(ops.Object):
         )
         self._container_name = container_name
         self._resources_limit_options = resources_limit_options or {}
+        self.remote_write_endpoints_getter = remote_write_endpoints
 
         self.nginx = Nginx(
             self._charm,
@@ -601,6 +605,9 @@ class Coordinator(ops.Object):
     def _on_collect_unit_status(self, e: ops.CollectStatusEvent):
         # todo add [nginx.workload] statuses
 
+        if self.resources_patch and self.resources_patch.get_status().name != "active":
+            e.add_status(self.resources_patch.get_status())
+
         if not self.cluster.has_workers:
             e.add_status(ops.BlockedStatus("[consistency] Missing any worker relation."))
         if not self.is_coherent:
@@ -612,9 +619,6 @@ class Coordinator(ops.Object):
             e.add_status(ops.ActiveStatus("[coordinator] Degraded."))
         else:
             e.add_status(ops.ActiveStatus())
-
-        if self.resources_patch:
-            e.add_status(self.resources_patch.get_status())
 
     ###################
     # UTILITY METHODS #
@@ -680,6 +684,11 @@ class Coordinator(ops.Object):
             ),
             tracing_receivers=(
                 self._tracing_receivers_getter() if self._tracing_receivers_getter else None
+            ),
+            remote_write_endpoints=(
+                self.remote_write_endpoints_getter()
+                if self.remote_write_endpoints_getter
+                else None
             ),
         )
 

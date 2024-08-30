@@ -287,6 +287,9 @@ class Worker(ops.Object):
             return ServiceEndpointStatus.down
 
     def _on_collect_status(self, e: ops.CollectStatusEvent):
+        if self.resources_patch and self.resources_patch.get_status().name != "active":
+            e.add_status(self.resources_patch.get_status())
+
         if not self._container.can_connect():
             e.add_status(WaitingStatus(f"Waiting for `{self._name}` container"))
         if not self.model.get_relation(self._endpoints["cluster"]):
@@ -316,9 +319,6 @@ class Worker(ops.Object):
                 else f"{','.join(self.roles)} ready."
             )
         )
-
-        if self.resources_patch:
-            e.add_status(self.resources_patch.get_status())
 
     # Utility functions
     @property

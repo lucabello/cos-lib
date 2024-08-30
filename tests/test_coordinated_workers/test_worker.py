@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock, patch
 
 import ops
@@ -5,7 +6,7 @@ import pytest
 import tenacity
 from ops import Framework
 from ops.pebble import Layer, ServiceStatus
-from scenario import Container, Context, Mount, State
+from scenario import Container, Context, Mount, Relation, State
 from scenario.runtime import UncaughtCharmError
 
 from cosl.coordinated_workers.worker import CONFIG_FILE, Worker
@@ -274,3 +275,51 @@ def test_worker_raises_if_service_restart_fails_for_too_long(tmp_path):
                 # so we don't have to wait for minutes:
                 mgr.charm.worker.SERVICE_START_RETRY_WAIT = tenacity.wait_none()
                 mgr.charm.worker.SERVICE_START_RETRY_STOP = tenacity.stop_after_delay(2)
+
+
+@pytest.mark.parametrize(
+    "remote_databag, expected",
+    (
+        (
+            {
+                "remote_write_endpoints": json.dumps([{"url": "test-url.com"}]),
+                "worker_config": json.dumps("test"),
+            },
+            [{"url": "test-url.com"}],
+        ),
+        ({"remote_write_endpoints": json.dumps(None), "worker_config": json.dumps("test")}, []),
+        (
+            {
+                "remote_write_endpoints": json.dumps(
+                    [{"url": "test-url.com"}, {"url": "test2-url.com"}]
+                ),
+                "worker_config": json.dumps("test"),
+            },
+            [{"url": "test-url.com"}, {"url": "test2-url.com"}],
+        ),
+    ),
+)
+def test_get_remote_write_endpoints(remote_databag, expected):
+    ctx = Context(
+        MyCharm,
+        meta={
+            "name": "foo",
+            "requires": {"cluster": {"interface": "cluster"}},
+            "containers": {"foo": {"type": "oci-image"}},
+        },
+        config={"options": {"role-all": {"type": "boolean", "default": True}}},
+    )
+    container = Container(
+        "foo",
+        can_connect=True,
+    )
+    relation = Relation(
+        "cluster",
+        remote_app_data=remote_databag,
+    )
+    with ctx.manager(
+        relation.changed_event, State(containers=[container], relations=[relation])
+    ) as mgr:
+        charm = mgr.charm
+        mgr.run()
+        assert charm.worker.cluster.get_remote_write_endpoints() == expected
