@@ -220,8 +220,18 @@ class Worker(ops.Object):
         # If the user has changed roles, publish them to relation data
         self._update_cluster_relation()
         # If there is a config, start the worker
-        if self.cluster.get_worker_config():
+        if self._worker_config:
             self._update_worker_config()
+
+    @property
+    def _worker_config(self):
+        """The configuration that this worker should run with, as received from the coordinator.
+
+        Charms that wish to modify their config before it's written to disk by the Worker
+        should subclass the worker, override this method, and use it to manipulate the
+        config that's presented to the Worker.
+        """
+        return self.cluster.get_worker_config()
 
     @property
     def status(self) -> ServiceEndpointStatus:
@@ -296,7 +306,7 @@ class Worker(ops.Object):
             e.add_status(BlockedStatus("Missing relation to a coordinator charm"))
         elif not self.cluster.relation:
             e.add_status(WaitingStatus("Cluster relation not ready"))
-        if not self.cluster.get_worker_config():
+        if not self._worker_config:
             e.add_status(WaitingStatus("Waiting for coordinator to publish a config"))
         if not self.roles:
             e.add_status(
@@ -413,7 +423,7 @@ class Worker(ops.Object):
             logger.info(f"publishing roles: {self.roles}")
             self.cluster.publish_app_roles(self.roles)
 
-        if self.cluster.get_worker_config():
+        if self._worker_config:
             self._update_config()
 
     def _running_worker_config(self) -> Optional[Dict[str, Any]]:
@@ -448,7 +458,7 @@ class Worker(ops.Object):
             logger.warning("cannot update worker config: role missing or misconfigured.")
             return False
 
-        worker_config = self.cluster.get_worker_config()
+        worker_config = self._worker_config
         if not worker_config:
             logger.warning("cannot update worker config: coordinator hasn't published one yet.")
             return False
