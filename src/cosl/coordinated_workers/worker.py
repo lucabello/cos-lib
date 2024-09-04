@@ -6,6 +6,7 @@
 import logging
 import re
 import socket
+import subprocess
 import urllib.request
 from enum import Enum
 from functools import partial
@@ -501,8 +502,8 @@ class Worker(ops.Object):
             ROOT_CA_CERT.unlink(missing_ok=True)
 
         # FIXME: uncomment as soon as the nginx image contains the ca-certificates package
-        # self._container.exec(["update-ca-certificates", "--fresh"]).wait()
-        # subprocess.run(["update-ca-certificates", "--fresh"])
+        self._container.exec(["update-ca-certificates", "--fresh"]).wait()
+        subprocess.run(["update-ca-certificates", "--fresh"])
 
         return True
 

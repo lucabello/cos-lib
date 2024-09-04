@@ -250,7 +250,9 @@ class Coordinator(ops.Object):
             certificates_relation_name=self._endpoints["certificates"],
             # let's assume we don't need the peer relation as all coordinator charms will assume juju secrets
             key="coordinator-server-cert",
-            sans=[self.hostname],
+            # update certificate with new SANs whenever a worker is added/removed
+            sans=[self.hostname, *self.cluster.gather_addresses()],
+            refresh_events=[self.cluster.on.changed],
         )
 
         self.s3_requirer = S3Requirer(self._charm, self._endpoints["s3"], s3_bucket_name)

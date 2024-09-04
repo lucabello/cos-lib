@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from ops import ActiveStatus, BlockedStatus, CharmBase, Framework, WaitingStatus
 from ops.pebble import Layer
-from scenario import Container, Context, Relation, State
+from scenario import Container, Context, ExecOutput, Relation, State
 
 from cosl.coordinated_workers.interface import ClusterProviderAppData
 from cosl.coordinated_workers.worker import Worker, WorkerError
@@ -84,7 +84,9 @@ def base_state(request):
     ClusterProviderAppData(worker_config="some: yaml").dump(app_data)
     return State(
         leader=request.param,
-        containers=[Container("workload")],
+        containers=[
+            Container("workload", exec_mock={("update-ca-certificates", "--fresh"): ExecOutput()})
+        ],
         relations=[Relation("cluster", remote_app_data=app_data)],
     )
 
