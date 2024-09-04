@@ -46,6 +46,7 @@ check_libs_installed(
     "charms.loki_k8s.v1.loki_push_api",
     "charms.tempo_k8s.v2.tracing",
     "charms.observability_libs.v0.kubernetes_compute_resources_patch",
+    "charms.tls_certificates_interface.v3.tls_certificates",
 )
 
 from charms.data_platform_libs.v0.s3 import S3Requirer
