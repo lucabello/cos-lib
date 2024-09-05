@@ -27,7 +27,6 @@ class MyCoordCharm(CharmBase):
         self.coordinator = Coordinator(
             charm=self,
             roles_config=my_roles,
-            s3_bucket_name="coordinator",
             external_url="localhost:3200",
             worker_metrics_port="8080",
             endpoints={

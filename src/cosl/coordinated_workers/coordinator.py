@@ -163,7 +163,6 @@ class Coordinator(ops.Object):
         self,
         charm: ops.CharmBase,
         roles_config: ClusterRolesConfig,
-        s3_bucket_name: str,
         external_url: str,  # the ingressed url if we have ingress, else fqdn
         worker_metrics_port: int,
         endpoints: _EndpointMapping,
@@ -183,7 +182,6 @@ class Coordinator(ops.Object):
         Args:
             charm: The coordinator charm object.
             roles_config: Definition of the roles and the deployment requirements.
-            s3_bucket_name: The name of the S3 Bucket to use.
             external_url: The external (e.g., ingressed) URL of the coordinator charm.
             worker_metrics_port: The port under which workers expose their metrics.
             nginx_config: A function generating the Nginx configuration file for the workload.
@@ -255,7 +253,7 @@ class Coordinator(ops.Object):
             refresh_events=[self.cluster.on.changed],
         )
 
-        self.s3_requirer = S3Requirer(self._charm, self._endpoints["s3"], s3_bucket_name)
+        self.s3_requirer = S3Requirer(self._charm, self._endpoints["s3"])
 
         self._grafana_dashboards = GrafanaDashboardProvider(
             self._charm, relation_name=self._endpoints["grafana-dashboards"]
