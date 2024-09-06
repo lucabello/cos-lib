@@ -171,14 +171,11 @@ class Worker(ops.Object):
             if self._resources_requests_getter
             else None
         )
+        # holistic update logic, aka common exit hook
+        self._reconcile()
 
         # Event listeners
-        self.framework.observe(self._charm.on.config_changed, self._on_config_changed)
-        self.framework.observe(self._charm.on.upgrade_charm, self._on_upgrade_charm)
         self.framework.observe(self._charm.on.collect_unit_status, self._on_collect_status)
-
-        self.framework.observe(self.cluster.on.config_received, self._on_worker_config_received)
-        self.framework.observe(self.cluster.on.created, self._on_cluster_created)
         self.framework.observe(self.cluster.on.removed, self._log_forwarder.disable_logging)
 
         self.framework.observe(self._charm.on[self._name].pebble_ready, self._on_pebble_ready)
@@ -192,7 +189,6 @@ class Worker(ops.Object):
     # Event handlers
     def _on_pebble_ready(self, _: ops.PebbleReadyEvent):
         self._charm.unit.set_workload_version(self.running_version() or "")
-        self._update_config()
 
     def _on_pebble_check_failed(self, event: ops.PebbleCheckFailedEvent):
         if event.info.name == "ready":
@@ -203,26 +199,6 @@ class Worker(ops.Object):
         if event.info.name == "ready":
             logger.info("Pebble `ready` check is now passing: " "worker node is up.")
             # collect-status will detect that we're ready and set active status.
-
-    def _on_worker_config_received(self, _: ops.EventBase):
-        self._update_config()
-
-    def _on_upgrade_charm(self, _: ops.UpgradeCharmEvent):
-        self._update_cluster_relation()
-
-    def _on_cluster_created(self, _: ops.EventBase):
-        self._update_cluster_relation()
-        self._update_config()
-
-    def _on_cluster_changed(self, _: ops.EventBase):
-        self._update_config()
-
-    def _on_config_changed(self, _: ops.ConfigChangedEvent):
-        # If the user has changed roles, publish them to relation data
-        self._update_cluster_relation()
-        # If there is a config, start the worker
-        if self._worker_config:
-            self._update_worker_config()
 
     @property
     def _worker_config(self):
@@ -358,6 +334,10 @@ class Worker(ops.Object):
 
     def _update_config(self) -> None:
         """Update the worker config and restart the workload if necessary."""
+        if not self._container.can_connect():
+            logger.debug("container cannot connect, skipping update_config.")
+            return
+
         restart = any(
             (
                 self._update_tls_certificates(),
@@ -417,15 +397,17 @@ class Worker(ops.Object):
             "ready", {"override": "replace", "http": {"url": self._readiness_check_endpoint(self)}}
         )
 
+    def _reconcile(self):
+        """Run all unconditional logic."""
+        self._update_cluster_relation()
+        self._update_config()
+
     def _update_cluster_relation(self) -> None:
         """Publish all the worker information to relation data."""
         self.cluster.publish_unit_address(socket.getfqdn())
         if self._charm.unit.is_leader() and self.roles:
             logger.info(f"publishing roles: {self.roles}")
             self.cluster.publish_app_roles(self.roles)
-
-        if self._worker_config:
-            self._update_config()
 
     def _running_worker_config(self) -> Optional[Dict[str, Any]]:
         """Return the worker config as dict, or None if retrieval failed."""

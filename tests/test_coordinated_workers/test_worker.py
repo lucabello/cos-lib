@@ -1,4 +1,5 @@
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -266,19 +267,31 @@ def test_worker_raises_if_service_restart_fails_for_too_long(tmp_path):
         },
     )
 
-    # WHEN service restart fails
     def raise_change_error(*args):
         raise ops.pebble.ChangeError("something", MagicMock())
 
-    with patch("ops.model.Container.restart", new=raise_change_error):
-        # THEN the charm errors out
-        with pytest.raises(Exception):
-            # technically an ops.pebble.ChangeError but the context manager doesn't catch it for some reason
+    with ExitStack() as stack:
+        # WHEN service restart fails
+        stack.enter_context(patch("ops.model.Container.restart", new=raise_change_error))
 
-            with ctx.manager(container.pebble_ready_event, State(containers=[container])) as mgr:
-                # so we don't have to wait for minutes:
-                mgr.charm.worker.SERVICE_START_RETRY_WAIT = tenacity.wait_none()
-                mgr.charm.worker.SERVICE_START_RETRY_STOP = tenacity.stop_after_delay(2)
+        # so we don't have to wait for minutes:
+        stack.enter_context(
+            patch(
+                "cosl.coordinated_workers.worker.Worker.SERVICE_START_RETRY_WAIT",
+                new=tenacity.wait_none(),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "cosl.coordinated_workers.worker.Worker.SERVICE_START_RETRY_STOP",
+                new=tenacity.stop_after_delay(2),
+            )
+        )
+
+        # THEN the charm errors out
+        # technically an ops.pebble.ChangeError but the context manager doesn't catch it for some reason
+        stack.enter_context(pytest.raises(Exception))
+        ctx.run(container.pebble_ready_event, State(containers=[container]))
 
 
 @pytest.mark.parametrize(

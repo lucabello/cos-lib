@@ -130,11 +130,13 @@ def test_status_check_no_pebble(ctx, base_state, caplog):
 
 @k8s_patch()
 def test_status_check_no_config(ctx, base_state, caplog):
-    # GIVEN there is no config file on disk
     state = base_state.with_can_connect("workload", True)
-
+    # GIVEN there is no config file on disk
     # WHEN we run any event
-    state_out = ctx.run("update_status", state)
+    with patch(
+        "cosl.coordinated_workers.worker.Worker._running_worker_config", new=lambda _: None
+    ):
+        state_out = ctx.run("update_status", state)
 
     # THEN the charm sets blocked
     assert state_out.unit_status == BlockedStatus("node down (see logs)")
@@ -178,7 +180,7 @@ def test_status_no_endpoint(ctx, base_state, caplog):
             self.worker = Worker(
                 self,
                 "workload",
-                lambda _: Layer(""),
+                lambda _: Layer({"services": {"foo": {"command": "foo"}}}),
                 {"cluster": "cluster"},
             )
 
@@ -211,12 +213,13 @@ def test_access_status_no_endpoint_raises():
     # GIVEN the caller doesn't pass an endpoint to Worker
     caller = MagicMock()
     with patch("cosl.juju_topology.JujuTopology.from_charm"):
-        worker = Worker(
-            caller,
-            "workload",
-            lambda _: Layer(""),
-            {"cluster": "cluster"},
-        )
+        with patch("cosl.coordinated_workers.worker.Worker._reconcile"):
+            worker = Worker(
+                caller,
+                "workload",
+                lambda _: Layer({"services": {"foo": {"command": "foo"}}}),
+                {"cluster": "cluster"},
+            )
 
     # THEN calling .status raises
     with pytest.raises(WorkerError):
