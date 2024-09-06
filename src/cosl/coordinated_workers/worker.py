@@ -371,6 +371,7 @@ class Worker(ops.Object):
 
         current_plan = self._container.get_plan()
         new_layer = self._pebble_layer()
+
         self._add_readiness_check(new_layer)
 
         def diff(layer: Layer, plan: Plan):
@@ -394,7 +395,13 @@ class Worker(ops.Object):
             return
 
         new_layer.checks["ready"] = Check(
-            "ready", {"override": "replace", "http": {"url": self._readiness_check_endpoint(self)}}
+            "ready",
+            {
+                "override": "replace",
+                # threshold gets added automatically by pebble
+                "threshold": 3,
+                "http": {"url": self._readiness_check_endpoint(self)},
+            },
         )
 
     def _reconcile(self):
@@ -466,6 +473,27 @@ class Worker(ops.Object):
             ca_cert = tls_data["ca_cert"]
             server_cert = tls_data["server_cert"]
 
+            # Read the current content of the files (if they exist)
+            current_server_cert = (
+                self._container.pull(CERT_FILE).read() if self._container.exists(CERT_FILE) else ""
+            )
+            current_private_key = (
+                self._container.pull(KEY_FILE).read() if self._container.exists(KEY_FILE) else ""
+            )
+            current_ca_cert = (
+                self._container.pull(CLIENT_CA_FILE).read()
+                if self._container.exists(CLIENT_CA_FILE)
+                else ""
+            )
+
+            if (
+                current_server_cert == server_cert
+                and current_private_key == private_key
+                and current_ca_cert == ca_cert
+            ):
+                # No update needed
+                return False
+
             # Save the workload certificates
             self._container.push(CERT_FILE, server_cert or "", make_dirs=True)
             self._container.push(KEY_FILE, private_key or "", make_dirs=True)
@@ -475,6 +503,16 @@ class Worker(ops.Object):
             # Save the cacert in the charm container for charm traces
             ROOT_CA_CERT.write_text(ca_cert)
         else:
+
+            if not (
+                self._container.exists(CERT_FILE)
+                or self._container.exists(KEY_FILE)
+                or self._container.exists(CLIENT_CA_FILE)
+                or self._container.exists(ROOT_CA_CERT)
+            ):
+                # No update needed
+                return False
+
             self._container.remove_path(CERT_FILE, recursive=True)
             self._container.remove_path(KEY_FILE, recursive=True)
             self._container.remove_path(CLIENT_CA_FILE, recursive=True)
