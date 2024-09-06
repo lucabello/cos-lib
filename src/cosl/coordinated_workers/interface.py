@@ -63,19 +63,12 @@ class DatabagModel(pydantic.BaseModel):
         extra="ignore",
         # Allow instantiating this class by field name (instead of forcing alias).
         populate_by_name=True,
-        # Custom config key: whether to nest the whole datastructure (as json)
-        # under a field or spread it out at the toplevel.
-        _NEST_UNDER=None,
     )  # type: ignore
     """Pydantic config."""
 
     @classmethod
     def load(cls, databag: _RawDatabag):
         """Load this model from a Juju databag."""
-        nest_under = cls.model_config.get("_NEST_UNDER")
-        if nest_under:
-            return cls.model_validate(json.loads(databag[nest_under]))  # type: ignore
-
         try:
             data = {
                 k: json.loads(v)
@@ -105,13 +98,6 @@ class DatabagModel(pydantic.BaseModel):
 
         if clear:
             _databag.clear()
-
-        if nest_under := self.model_config.get("_NEST_UNDER"):
-            _databag[nest_under] = self.model_dump_json(  # type: ignore
-                by_alias=True,
-                # skip keys whose values are default
-                exclude_defaults=True,
-            )
 
         dct = self.model_dump(mode="json", by_alias=True, exclude_defaults=True)  # type: ignore
         _databag.update({k: json.dumps(v) for k, v in dct.items()})
