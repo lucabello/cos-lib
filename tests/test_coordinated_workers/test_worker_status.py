@@ -27,13 +27,14 @@ def _urlopen_patch(url: str, resp: str, tls: bool):
 
 
 @contextmanager
-def k8s_patch(status=ActiveStatus()):
+def k8s_patch(status=ActiveStatus(), is_ready=True):
     with patch("lightkube.core.client.GenericSyncClient"):
         with patch.multiple(
             "cosl.coordinated_workers.worker.KubernetesComputeResourcesPatch",
             _namespace="test-namespace",
             _patch=MagicMock(return_value=None),
             get_status=MagicMock(return_value=status),
+            is_ready=MagicMock(return_value=is_ready),
         ) as patcher:
             yield patcher
 

@@ -660,6 +660,14 @@ class Coordinator(ops.Object):
 
     def update_cluster(self):
         """Build the workers config and distribute it to the relations."""
+        # There could be a race between the resource patch and pebble operations
+        # i.e., charm code proceeds beyond a can_connect guard, and then lightkube patches the statefulset
+        # and the workload is no longer available.
+        # `resources_patch` might be `None` when no resources requests or limits are requested by the charm.
+        if self.resources_patch and not self.resources_patch.is_ready():
+            logger.debug("Resource patch not ready yet. Skipping cluster update step.")
+            return
+
         self.nginx.configure_pebble_layer()
         self.nginx_exporter.configure_pebble_layer()
         if not self.is_coherent:

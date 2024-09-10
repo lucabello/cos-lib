@@ -405,7 +405,14 @@ class Worker(ops.Object):
         )
 
     def _reconcile(self):
-        """Run all unconditional logic."""
+        """Run all logic that is independent of what event we're processing."""
+        # There could be a race between the resource patch and pebble operations
+        # i.e., charm code proceeds beyond a can_connect guard, and then lightkube patches the statefulset
+        # and the workload is no longer available
+        # `resources_patch` might be `None` when no resources requests or limits are requested by the charm.
+        if self.resources_patch and not self.resources_patch.is_ready():
+            logger.debug("Resource patch not ready yet. Skipping reconciliation step.")
+            return
         self._update_cluster_relation()
         self._update_config()
 

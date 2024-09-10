@@ -19,6 +19,7 @@ from cosl.coordinated_workers.worker import (
     KEY_FILE,
     Worker,
 )
+from tests.test_coordinated_workers.test_worker_status import k8s_patch
 
 
 @pytest.fixture(autouse=True)
@@ -507,3 +508,39 @@ def test_worker_does_not_restart_on_no_cert_changed(restart_mock, tmp_path):
     )
 
     assert restart_mock.call_count == 0
+
+
+@k8s_patch(is_ready=False)
+@patch.object(Worker, "_update_config")
+def test_worker_no_reconcile_when_patch_not_ready(_update_config_mock):
+    class MyCharmWithResources(ops.CharmBase):
+        layer = Layer("")
+
+        def __init__(self, framework: Framework):
+            super().__init__(framework)
+            self.worker = Worker(
+                self,
+                "foo",
+                lambda _: self.layer,
+                {"cluster": "cluster"},
+                readiness_check_endpoint="http://localhost:3200/ready",
+                resources_requests=lambda _: {"cpu": "50m", "memory": "50Mi"},
+                container_name="charm",
+            )
+
+    ctx = Context(
+        MyCharmWithResources,
+        meta={
+            "name": "foo",
+            "requires": {"cluster": {"interface": "cluster"}},
+            "containers": {"foo": {"type": "oci-image"}},
+        },
+        config={"options": {"role-all": {"type": "boolean", "default": True}}},
+    )
+
+    ctx.run(
+        "update_status",
+        State(leader=True, containers=[Container("foo")]),
+    )
+
+    assert not _update_config_mock.called
