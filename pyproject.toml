@@ -40,6 +40,8 @@ include = ["py.typed"]
 # Testing tools configuration
 [tool.coverage.run]
 branch = true
+parallel = true
+omit = ["tests/**", "lib/**"]
 
 [tool.coverage.report]
 show_missing = true

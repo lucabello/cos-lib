@@ -119,11 +119,18 @@ class LokiEmitter:
         labels[self.level_label] = record.levelname.lower()
         labels[self.logger_label] = record.name
 
-        extra_labels = getattr(record, "labels", {})
+        # if the user implemented a logrecord subclass with a .labels attributes, attempt to
+        # respect it and add those labels on top of those registered on the LokiEmitter class.
+        extra_labels: Any = getattr(record, "labels", {})
         if not isinstance(extra_labels, dict):
             return labels
 
+        label_name: Any
+        label_value: Any
         for label_name, label_value in extra_labels.items():
+            if not isinstance(label_name, str) or not isinstance(label_value, str):
+                return labels
+
             cleared_name = self.format_label(label_name)
             if cleared_name:
                 labels[cleared_name] = label_value
