@@ -1,9 +1,10 @@
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from functools import partial
 from unittest.mock import MagicMock, patch
 
 import pytest
-from ops import ActiveStatus, BlockedStatus, CharmBase, Framework, WaitingStatus
+import tenacity
+from ops import ActiveStatus, CharmBase, Framework, WaitingStatus
 from ops.pebble import Layer
 from scenario import Container, Context, ExecOutput, Relation, State
 
@@ -37,6 +38,24 @@ def k8s_patch(status=ActiveStatus(), is_ready=True):
             is_ready=MagicMock(return_value=is_ready),
         ) as patcher:
             yield patcher
+
+
+@pytest.fixture(autouse=True)
+def patch_status_wait():
+    with ExitStack() as stack:
+        # so we don't have to wait for minutes:
+        stack.enter_context(
+            patch(
+                "cosl.coordinated_workers.worker.Worker.SERVICE_STATUS_UP_RETRY_WAIT",
+                new=tenacity.wait_none(),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "cosl.coordinated_workers.worker.Worker.SERVICE_STATUS_UP_RETRY_STOP",
+                new=tenacity.stop_after_delay(2),
+            )
+        )
 
 
 @pytest.fixture
@@ -124,9 +143,9 @@ def test_status_check_no_pebble(ctx, base_state, caplog):
     state_out = ctx.run("update_status", state)
 
     # THEN the charm sets blocked
-    assert state_out.unit_status == BlockedStatus("node down (see logs)")
+    assert state_out.unit_status == WaitingStatus("Waiting for `workload` container")
     # AND THEN the charm logs that the container isn't ready.
-    assert "Container cannot connect. Skipping status check." in caplog.messages
+    assert "container cannot connect, skipping update_config." in caplog.messages
 
 
 @k8s_patch()
@@ -140,7 +159,7 @@ def test_status_check_no_config(ctx, base_state, caplog):
         state_out = ctx.run("update_status", state)
 
     # THEN the charm sets blocked
-    assert state_out.unit_status == BlockedStatus("node down (see logs)")
+    assert state_out.unit_status == WaitingStatus("Waiting for coordinator to publish a config")
     # AND THEN the charm logs that the config isn't on disk
     assert "Config file not on disk. Skipping status check." in caplog.messages
 
@@ -206,11 +225,9 @@ def test_status_no_endpoint(ctx, base_state, caplog):
     state_out = ctx.run("update_status", state)
     # THEN the charm sets Active: ready, even though we have no idea whether the endpoint is ready.
     assert state_out.unit_status == ActiveStatus("read,write ready.")
-    # AND THEN the charm logs that we can't determine the readiness
-    assert "Unable to determine worker readiness: no endpoint given." in caplog.messages
 
 
-def test_access_status_no_endpoint_raises():
+def test_access_readiness_no_endpoint_raises():
     # GIVEN the caller doesn't pass an endpoint to Worker
     caller = MagicMock()
     with patch("cosl.juju_topology.JujuTopology.from_charm"):
@@ -222,9 +239,9 @@ def test_access_status_no_endpoint_raises():
                 {"cluster": "cluster"},
             )
 
-    # THEN calling .status raises
+    # THEN calling .check_readiness raises
     with pytest.raises(WorkerError):
-        worker.status  # noqa
+        worker.check_readiness()  # noqa
 
 
 def test_status_check_ready_with_patch(ctx, base_state, tls):

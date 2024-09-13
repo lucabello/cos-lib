@@ -12,11 +12,12 @@ from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, Union
+from urllib.error import HTTPError
 
 import ops
 import tenacity
 import yaml
-from ops import MaintenanceStatus
+from ops import MaintenanceStatus, StatusBase
 from ops.model import ActiveStatus, BlockedStatus, WaitingStatus
 from ops.pebble import Check, Layer, PathError, Plan, ProtocolError
 
@@ -87,6 +88,19 @@ class ServiceEndpointStatus(Enum):
 class Worker(ops.Object):
     """Charming worker."""
 
+    # configuration for the service start retry logic in .restart().
+    # this will determine how long we wait for pebble to try to start the worker process
+    SERVICE_START_RETRY_STOP = tenacity.stop_after_delay(60 * 15)
+    SERVICE_START_RETRY_WAIT = tenacity.wait_fixed(60)
+    SERVICE_START_RETRY_IF = tenacity.retry_if_exception_type(ops.pebble.ChangeError)
+
+    # configuration for the service status retry logic after a restart has occurred.
+    # this will determine how long we wait for the worker process to report "ready" after it
+    # has been successfully restarted
+    SERVICE_STATUS_UP_RETRY_STOP = tenacity.stop_after_delay(60 * 15)
+    SERVICE_STATUS_UP_RETRY_WAIT = tenacity.wait_fixed(10)
+    SERVICE_STATUS_UP_RETRY_IF = tenacity.retry_if_result(lambda out: out)
+
     _endpoints: _EndpointMapping = {
         "cluster": "cluster",
     }
@@ -127,7 +141,9 @@ class Worker(ops.Object):
         super().__init__(charm, key="worker")
         self._charm = charm
         self._name = name
-        self._pebble_layer = partial(pebble_layer, self)
+        self._pebble_layer = partial(
+            pebble_layer, self
+        )  #  do not call this directly. use self.pebble_layer instead
         self.topology = JujuTopology.from_charm(self._charm)
         self._container = self._charm.unit.get_container(name)
 
@@ -211,15 +227,20 @@ class Worker(ops.Object):
         return self.cluster.get_worker_config()
 
     @property
+    def pebble_layer(self) -> Optional[Layer]:
+        """Attempt to fetch a pebble layer from the charm.
+
+        If the charm raises, report the exception and return None.
+        """
+        try:
+            return self._pebble_layer()
+        except Exception:
+            logger.exception("exception while attempting to get pebble layer from charm")
+            return None
+
+    @property
     def status(self) -> ServiceEndpointStatus:
         """Determine the status of the service's endpoint."""
-        check_endpoint = self._readiness_check_endpoint
-        if not check_endpoint:
-            raise WorkerError(
-                "cannot check readiness without a readiness_check_endpoint configured. "
-                "Pass one to Worker on __init__."
-            )
-
         if not self._container.can_connect():
             logger.debug("Container cannot connect. Skipping status check.")
             return ServiceEndpointStatus.down
@@ -228,9 +249,11 @@ class Worker(ops.Object):
             logger.debug("Config file not on disk. Skipping status check.")
             return ServiceEndpointStatus.down
 
+        if not (layer := self.pebble_layer):
+            return ServiceEndpointStatus.down
+
         # we really don't want this code to raise errors, so we blanket catch all.
         try:
-            layer: Layer = self._pebble_layer()
             services = self._container.get_services(*layer.services.keys())
             running_status = {name: svc.is_running() for name, svc in services.items()}
             if not all(running_status.values()):
@@ -238,12 +261,33 @@ class Worker(ops.Object):
                     starting_services = tuple(
                         name for name, running in running_status.items() if not running
                     )
-                    logger.info(f"Some services are not running: {starting_services}.")
+                    logger.info(
+                        f"Some services which should be running are not: {starting_services}."
+                    )
                     return ServiceEndpointStatus.starting
 
                 logger.info("All services are down.")
                 return ServiceEndpointStatus.down
 
+        except Exception:
+            logger.exception(
+                "Unexpected error while getting worker status. "
+                "This could mean that the worker is still starting."
+            )
+            return ServiceEndpointStatus.down
+
+        return self.check_readiness()
+
+    def check_readiness(self) -> ServiceEndpointStatus:
+        """If the user has configured a readiness check endpoint, GET it and check the workload status."""
+        check_endpoint = self._readiness_check_endpoint
+        if not check_endpoint:
+            raise WorkerError(
+                "cannot check readiness without a readiness_check_endpoint configured. "
+                "Pass one to Worker on __init__."
+            )
+
+        try:
             with urllib.request.urlopen(check_endpoint(self)) as response:
                 html: bytes = response.read()
 
@@ -266,46 +310,66 @@ class Worker(ops.Object):
             logger.debug(f"GET {check_endpoint} returned: {raw_out!r}.")
             return ServiceEndpointStatus.starting
 
+        except HTTPError:
+            logger.debug("Error getting readiness endpoint: server not up (yet)")
         except Exception:
-            logger.exception(
-                "Error while getting worker status. "
-                "This could mean that the worker is still starting."
-            )
-            return ServiceEndpointStatus.down
+            logger.exception("Unexpected exception getting readiness endpoint")
+        return ServiceEndpointStatus.down
 
     def _on_collect_status(self, e: ops.CollectStatusEvent):
+        # these are the basic failure modes. if any of these conditions are not met, the worker
+        # is still starting or not yet configured. The user needs to wait or take some action.
+        statuses: List[StatusBase] = []
         if self.resources_patch and self.resources_patch.get_status().name != "active":
-            e.add_status(self.resources_patch.get_status())
-
+            statuses.append(self.resources_patch.get_status())
         if not self._container.can_connect():
-            e.add_status(WaitingStatus(f"Waiting for `{self._name}` container"))
+            statuses.append(WaitingStatus(f"Waiting for `{self._name}` container"))
         if not self.model.get_relation(self._endpoints["cluster"]):
-            e.add_status(BlockedStatus("Missing relation to a coordinator charm"))
+            statuses.append(BlockedStatus("Missing relation to a coordinator charm"))
         elif not self.cluster.relation:
-            e.add_status(WaitingStatus("Cluster relation not ready"))
-        if not self._worker_config:
-            e.add_status(WaitingStatus("Waiting for coordinator to publish a config"))
+            statuses.append(WaitingStatus("Cluster relation not ready"))
+        if not self._worker_config or not self._running_worker_config():
+            statuses.append(WaitingStatus("Waiting for coordinator to publish a config"))
         if not self.roles:
-            e.add_status(
+            statuses.append(
                 BlockedStatus("Invalid or no roles assigned: please configure some valid roles")
             )
 
-        try:
-            status = self.status
-            if status == ServiceEndpointStatus.starting:
-                e.add_status(WaitingStatus("Starting..."))
-            elif status == ServiceEndpointStatus.down:
-                e.add_status(BlockedStatus("node down (see logs)"))
-        except WorkerError:
-            logger.debug("Unable to determine worker readiness: no endpoint given.")
+        # if none of the conditions above applies, the worker should in principle be either up or starting
+        if not statuses:
+            try:
+                status = self.status
+                if status == ServiceEndpointStatus.starting:
+                    statuses.append(WaitingStatus("Starting..."))
+                elif status == ServiceEndpointStatus.down:
+                    logger.error(
+                        "The worker service appears to be down and we don't know why. "
+                        "Please check the pebble services' status and their logs."
+                    )
+                    statuses.append(BlockedStatus("node down (see logs)"))
+            except WorkerError:
+                # this means that the node is not down for any obvious reason (no container,...)
+                # but we still can't know for sure that the node is up, because we don't have
+                # a readiness endpoint configured.
+                logger.debug(
+                    "Unable to determine worker readiness: no endpoint given. "
+                    "This means we're going to report active, but the node might still "
+                    "be coming up and not ready to serve."
+                )
 
-        e.add_status(
-            ActiveStatus(
-                "(all roles) ready."
-                if ",".join(self.roles) == "all"
-                else f"{','.join(self.roles)} ready."
+        # if still there are no statuses, we report we're all ready
+        if not statuses:
+            statuses.append(
+                ActiveStatus(
+                    "(all roles) ready."
+                    if ",".join(self.roles) == "all"
+                    else f"{','.join(self.roles)} ready."
+                )
             )
-        )
+
+        # report all applicable statuses to the model
+        for status in statuses:
+            e.add_status(status)
 
     # Utility functions
     @property
@@ -346,18 +410,33 @@ class Worker(ops.Object):
             )
         )
 
+        # we restart in 2 situations:
+        # - we need to because our config has changed
+        # - some services are not running
+        success = True
         if restart:
             logger.debug("Config changed. Restarting worker services...")
-            self.restart()
-
+            success = self.restart()
         # this can happen if s3 wasn't ready (server gave error) when we processed an earlier event
         # causing the worker service to die on startup (exited quickly with code...)
         # so we try to restart it now.
         # TODO: would be nice if we could be notified of when s3 starts working, so we don't have to
         #  wait for an update-status and can listen to that instead.
-        elif not all(svc.is_running() for svc in self._container.get_services().values()):
-            logger.debug("Some services are not running. Starting them now...")
-            self.restart()
+        else:
+            services_not_up = [
+                svc.name for svc in self._container.get_services().values() if not svc.is_running()
+            ]
+            if services_not_up:
+                logger.debug(
+                    f"Not all services are running: {services_not_up}. Restarting worker services..."
+                )
+                success = self.restart()
+
+        if not success:
+            # this means that we have managed to start the process without pebble errors,
+            # but somehow the status is still not "up" after 15m
+            # we are going to set blocked status, but we can also log it here
+            logger.warning("failed to (re)start the worker services")
 
     def _set_pebble_layer(self) -> bool:
         """Set Pebble layer.
@@ -370,9 +449,10 @@ class Worker(ops.Object):
             return False
 
         current_plan = self._container.get_plan()
-        new_layer = self._pebble_layer()
+        if not (layer := self.pebble_layer):
+            return False
 
-        self._add_readiness_check(new_layer)
+        self._add_readiness_check(layer)
 
         def diff(layer: Layer, plan: Plan):
             layer_dct = layer.to_dict()
@@ -382,9 +462,9 @@ class Worker(ops.Object):
                     return True
             return False
 
-        if diff(new_layer, current_plan):
+        if diff(layer, current_plan):
             logger.debug("Adding new layer to pebble...")
-            self._container.add_layer(self._name, new_layer, combine=True)
+            self._container.add_layer(self._name, layer, combine=True)
             return True
         return False
 
@@ -534,12 +614,8 @@ class Worker(ops.Object):
 
         return True
 
-    SERVICE_START_RETRY_STOP = tenacity.stop_after_delay(60 * 15)
-    SERVICE_START_RETRY_WAIT = tenacity.wait_fixed(60)
-    SERVICE_START_RETRY_IF = tenacity.retry_if_exception_type(ops.pebble.ChangeError)
-
     def restart(self):
-        """Restart the pebble service or start it if not already running.
+        """Restart the pebble service or start it if not already running, then wait for it to become ready.
 
         Default timeout is 15 minutes. Configure it by setting this class attr:
         >>> Worker.SERVICE_START_RETRY_STOP = tenacity.stop_after_delay(60 * 30)  # 30 minutes
@@ -555,6 +631,9 @@ class Worker(ops.Object):
         So letting juju retry the same hook will get us unstuck as soon as that contingency is resolved.
 
         See https://discourse.charmhub.io/t/its-probably-ok-for-a-unit-to-go-into-error-state/13022
+
+        Raises:
+            ChangeError, after continuously failing to restart the service.
         """
         if not self._container.exists(CONFIG_FILE):
             logger.error("cannot restart worker: config file doesn't exist (yet).")
@@ -562,6 +641,9 @@ class Worker(ops.Object):
         if not self.roles:
             logger.debug("cannot restart worker: no roles have been configured.")
             return
+        if not (layer := self.pebble_layer):
+            return
+        service_names = layer.services.keys()
 
         try:
             for attempt in tenacity.Retrying(
@@ -579,7 +661,7 @@ class Worker(ops.Object):
                         f"restarting... (attempt #{attempt.retry_state.attempt_number})"
                     )
                     # restart all services that our layer is responsible for
-                    self._container.restart(*self._pebble_layer().services.keys())
+                    self._container.restart(*service_names)
 
         except ops.pebble.ChangeError:
             logger.error(
@@ -587,6 +669,34 @@ class Worker(ops.Object):
                 "that the software needs to start is not available."
             )
             raise
+
+        try:
+            for attempt in tenacity.Retrying(
+                # status may report .down
+                retry=self.SERVICE_STATUS_UP_RETRY_IF,
+                # give this method some time to pass (by default 15 minutes)
+                stop=self.SERVICE_STATUS_UP_RETRY_STOP,
+                # wait 10 seconds between tries
+                wait=self.SERVICE_STATUS_UP_RETRY_WAIT,
+                # if you don't succeed raise the last caught exception when you're done
+                reraise=True,
+            ):
+                with attempt:
+                    self._charm.unit.status = MaintenanceStatus(
+                        f"waiting for worker process to report ready... (attempt #{attempt.retry_state.attempt_number})"
+                    )
+                    # return True if the status is "up"
+                    return self.status is ServiceEndpointStatus.up
+
+        except WorkerError:
+            #  unable to check worker readiness: no readiness_check_endpoint configured.
+            # this status is already set on the unit so no need to log it
+            pass
+
+        except Exception:
+            logger.exception("unexpected error while attempting to determine worker status")
+
+        return False
 
     def running_version(self) -> Optional[str]:
         """Get the running version from the worker process."""
