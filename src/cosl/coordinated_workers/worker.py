@@ -99,7 +99,7 @@ class Worker(ops.Object):
     # has been successfully restarted
     SERVICE_STATUS_UP_RETRY_STOP = tenacity.stop_after_delay(60 * 15)
     SERVICE_STATUS_UP_RETRY_WAIT = tenacity.wait_fixed(10)
-    SERVICE_STATUS_UP_RETRY_IF = tenacity.retry_if_result(lambda out: out)
+    SERVICE_STATUS_UP_RETRY_IF = tenacity.retry_if_not_result(bool)
 
     _endpoints: _EndpointMapping = {
         "cluster": "cluster",
@@ -685,8 +685,8 @@ class Worker(ops.Object):
                     self._charm.unit.status = MaintenanceStatus(
                         f"waiting for worker process to report ready... (attempt #{attempt.retry_state.attempt_number})"
                     )
-                    # return True if the status is "up"
-                    return self.status is ServiceEndpointStatus.up
+                # set result to status; will retry unless it's up
+                attempt.retry_state.set_result(self.status is ServiceEndpointStatus.up)
 
         except WorkerError:
             #  unable to check worker readiness: no readiness_check_endpoint configured.

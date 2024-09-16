@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import ops
 import pytest
-import tenacity
 import yaml
 from ops import Framework
 from ops.pebble import Layer, ServiceStatus
@@ -20,12 +19,6 @@ from cosl.coordinated_workers.worker import (
     Worker,
 )
 from tests.test_coordinated_workers.test_worker_status import k8s_patch
-
-
-@pytest.fixture(autouse=True)
-def patch_running_version():
-    with patch("cosl.coordinated_workers.worker.Worker.running_version", new=lambda _: "42.42"):
-        yield
 
 
 class MyCharm(ops.CharmBase):
@@ -286,20 +279,6 @@ def test_worker_raises_if_service_restart_fails_for_too_long(tmp_path):
     with ExitStack() as stack:
         # WHEN service restart fails
         stack.enter_context(patch("ops.model.Container.restart", new=raise_change_error))
-
-        # so we don't have to wait for minutes:
-        stack.enter_context(
-            patch(
-                "cosl.coordinated_workers.worker.Worker.SERVICE_START_RETRY_WAIT",
-                new=tenacity.wait_none(),
-            )
-        )
-        stack.enter_context(
-            patch(
-                "cosl.coordinated_workers.worker.Worker.SERVICE_START_RETRY_STOP",
-                new=tenacity.stop_after_delay(2),
-            )
-        )
 
         # THEN the charm errors out
         # technically an ops.pebble.ChangeError but the context manager doesn't catch it for some reason
