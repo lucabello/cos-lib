@@ -535,7 +535,7 @@ class Coordinator(ops.Object):
         """The Prometheus scrape job for Nginx."""
         job: Dict[str, Any] = {
             "static_configs": [
-                {"targets": [f"{self.hostname}:{self.nginx.options['nginx_port']}"]}
+                {"targets": [f"{self.hostname}:{self.nginx.options['nginx_exporter_port']}"]}
             ]
         }
         return [job]
