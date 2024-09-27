@@ -23,6 +23,7 @@ from typing import (
     MutableMapping,
     Optional,
     Set,
+    Tuple,
 )
 from urllib.parse import urlparse
 
@@ -330,14 +331,14 @@ class ClusterProvider(Object):
                     continue
         return data
 
-    def gather_addresses(self) -> Set[str]:
+    def gather_addresses(self) -> Tuple[str, ...]:
         """Go through the worker's unit databags to collect all the addresses published by the units."""
         data: Set[str] = set()
         addresses_by_role = self.gather_addresses_by_role()
         for _, address_set in addresses_by_role.items():
             data.update(address_set)
 
-        return data
+        return tuple(sorted(data))
 
     def gather_roles(self) -> Dict[str, int]:
         """Go through the worker's app databags and sum the available application roles."""
