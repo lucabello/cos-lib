@@ -1,3 +1,5 @@
+import json
+
 import ops
 import pytest
 from ops import Framework
@@ -173,3 +175,67 @@ def test_without_s3_integration_raises_error(
         # THEN the _s3_config method raises and S3NotFoundError
         with pytest.raises(S3NotFoundError):
             mgr.charm.coordinator._s3_config
+
+
+@pytest.mark.parametrize("region", (None, "canada"))
+@pytest.mark.parametrize("tls_ca_chain", (None, ["my ca chain"]))
+@pytest.mark.parametrize("bucket", ("bucky",))
+@pytest.mark.parametrize("secret_key", ("foo",))
+@pytest.mark.parametrize("access_key", ("foo",))
+@pytest.mark.parametrize(
+    "endpoint, endpoint_stripped",
+    (
+        ("example.com", "example.com"),
+        ("http://example.com", "example.com"),
+        ("https://example.com", "example.com"),
+    ),
+)
+def test_s3_integration(
+    coordinator_state: State,
+    coordinator_charm: ops.CharmBase,
+    region,
+    endpoint,
+    endpoint_stripped,
+    secret_key,
+    access_key,
+    bucket,
+    tls_ca_chain,
+):
+    # Test that a charm with a s3 integration gives the expected _s3_config
+
+    # GIVEN a coordinator charm with a s3 integration
+    ctx = Context(coordinator_charm, meta=coordinator_charm.META)
+    s3_relation = coordinator_state.get_relations("my-s3")[0]
+    relations_except_s3 = [
+        relation for relation in coordinator_state.relations if relation.endpoint != "my-s3"
+    ]
+    s3_app_data = {
+        k: json.dumps(v)
+        for k, v in {
+            **({"region": region} if region else {}),
+            **({"tls-ca-chain": tls_ca_chain} if tls_ca_chain else {}),
+            "endpoint": endpoint,
+            "access-key": access_key,
+            "secret-key": secret_key,
+            "bucket": bucket,
+        }.items()
+    }
+
+    # WHEN we process any event
+    with ctx.manager(
+        "update-status",
+        state=coordinator_state.replace(
+            relations=relations_except_s3 + [s3_relation.replace(remote_app_data=s3_app_data)]
+        ),
+    ) as mgr:
+
+        # THEN the s3_connection_info method returns the expected data structure
+        coordinator: Coordinator = mgr.charm.coordinator
+        assert coordinator.s3_connection_info.region == region
+        assert coordinator.s3_connection_info.bucket == bucket
+        assert coordinator.s3_connection_info.endpoint == endpoint
+        assert coordinator.s3_connection_info.secret_key == secret_key
+        assert coordinator.s3_connection_info.access_key == access_key
+        assert coordinator.s3_connection_info.tls_ca_chain == tls_ca_chain
+        assert coordinator._s3_config["endpoint"] == endpoint_stripped
+        assert coordinator._s3_config["insecure"] is (not tls_ca_chain)

@@ -138,7 +138,7 @@ def test_status_check_no_s3(ctx, base_state, worker, caplog):
     state_out = ctx.run("config_changed", state)
 
     # THEN the charm sets blocked
-    assert state_out.unit_status == BlockedStatus("[consistency] Missing S3 integration.")
+    assert state_out.unit_status == BlockedStatus("[s3] Missing S3 integration.")
 
 
 @patch(
@@ -188,4 +188,4 @@ def test_status_check_k8s_patch_success_after_retries(
         MagicMock(return_value=ActiveStatus("")),
     ):
         state_out = ctx.run("update_status", state_intermediate)
-    assert state_out.unit_status == ActiveStatus("[coordinator] Degraded.")
+    assert state_out.unit_status == ActiveStatus("Degraded.")

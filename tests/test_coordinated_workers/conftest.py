@@ -1,6 +1,5 @@
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Generator
 from unittest.mock import patch
 
 import pytest
@@ -8,7 +7,7 @@ import tenacity
 
 
 @pytest.fixture(autouse=True)
-def patch_all():
+def patch_all(tmp_path: Path):
     with ExitStack() as stack:
         # so we don't have to wait for minutes:
         stack.enter_context(
@@ -36,15 +35,9 @@ def patch_all():
             )
         )
 
+        # Prevent the worker's _update_tls_certificates method to try and write our local filesystem
         stack.enter_context(
-            patch("cosl.coordinated_workers.worker.Worker.running_version", new=lambda _: "42.42")
+            patch("cosl.coordinated_workers.worker.ROOT_CA_CERT", new=tmp_path / "rootcacert")
         )
 
         yield
-
-
-@pytest.fixture(autouse=True)
-def root_ca_cert(tmp_path: Path) -> Generator[Path, None, None]:
-    # Prevent the charm's _update_tls_certificates method to try and write our local filesystem
-    with patch("src.cosl.coordinated_workers.worker.ROOT_CA_CERT", new=tmp_path / "rootcacert"):
-        yield tmp_path / "rootcacert"

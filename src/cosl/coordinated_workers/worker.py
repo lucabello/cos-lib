@@ -22,7 +22,7 @@ from ops.model import ActiveStatus, BlockedStatus, WaitingStatus
 from ops.pebble import Check, Layer, PathError, Plan, ProtocolError
 
 from cosl import JujuTopology
-from cosl.coordinated_workers.interface import ClusterRequirer
+from cosl.coordinated_workers.interface import ClusterRequirer, TLSData
 from cosl.helpers import check_libs_installed
 
 check_libs_installed(
@@ -40,8 +40,10 @@ from lightkube.models.core_v1 import ResourceRequirements
 BASE_DIR = "/worker"
 CONFIG_FILE = "/etc/worker/config.yaml"
 CERT_FILE = "/etc/worker/server.cert"
+S3_TLS_CA_CHAIN_FILE = "/etc/worker/s3_ca.crt"
 KEY_FILE = "/etc/worker/private.key"
 CLIENT_CA_FILE = "/etc/worker/ca.cert"
+ROOT_CA_CERT = Path("/usr/local/share/ca-certificates/ca.crt")
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +70,6 @@ _ResourceLimitOptionsMapping = TypedDict(
     },
 )
 """Mapping of the resources limit option names that the charms use, as defined in config.yaml."""
-
-
-ROOT_CA_CERT = Path("/usr/local/share/ca-certificates/ca.crt")
 
 
 class WorkerError(Exception):
@@ -143,7 +142,7 @@ class Worker(ops.Object):
         self._name = name
         self._pebble_layer = partial(
             pebble_layer, self
-        )  #  do not call this directly. use self.pebble_layer instead
+        )  # do not call this directly. use self.pebble_layer instead
         self.topology = JujuTopology.from_charm(self._charm)
         self._container = self._charm.unit.get_container(name)
 
@@ -548,71 +547,68 @@ class Worker(ops.Object):
 
         return False
 
+    def _sync_tls_files(self, tls_data: TLSData):
+        logger.debug("tls config in cluster. writing to container...")
+        if tls_data.privkey_secret_id:
+            private_key_secret = self.model.get_secret(id=tls_data.privkey_secret_id)
+            private_key = private_key_secret.get_content().get("private-key")
+        else:
+            private_key = None
+
+        new_contents: Optional[str]
+        any_changes = False
+        for new_contents, file in (
+            (tls_data.ca_cert, CLIENT_CA_FILE),
+            (tls_data.server_cert, CERT_FILE),
+            (private_key, KEY_FILE),
+            (tls_data.s3_tls_ca_chain, S3_TLS_CA_CHAIN_FILE),
+        ):
+            if not new_contents:
+                if self._container.exists(file):
+                    any_changes = True
+                    self._container.remove_path(file, recursive=True)
+                    logger.debug(f"{file} deleted")
+                    continue
+
+                logger.debug(f"{file} skipped")
+                continue
+
+            if self._container.exists(file):
+                current_contents = self._container.pull(file).read()
+                if current_contents == new_contents:
+                    logger.debug(f"{file} unchanged")
+                    continue
+
+            logger.debug(f"{file} updated")
+            any_changes = True
+            self._container.push(file, new_contents, make_dirs=True)
+
+        # Save the cacert in the charm container for charm traces
+        # we do it unconditionally to avoid the extra complexity.
+        if tls_data.ca_cert:
+            ROOT_CA_CERT.write_text(tls_data.ca_cert)
+        else:
+            ROOT_CA_CERT.unlink(missing_ok=True)
+        return any_changes
+
     def _update_tls_certificates(self) -> bool:
-        """Update the TLS certificates on disk according to their availability."""
+        """Update the TLS certificates on disk according to their availability.
+
+        Return True if we need to restart the workload after this update.
+        """
         if not self._container.can_connect():
             return False
 
-        if tls_data := self.cluster.get_tls_data():
-            private_key_secret = self.model.get_secret(id=tls_data["privkey_secret_id"])
-            private_key = private_key_secret.get_content().get("private-key")
+        tls_data = self.cluster.get_tls_data(allow_none=True)
+        if not tls_data:
+            return False
 
-            ca_cert = tls_data["ca_cert"]
-            server_cert = tls_data["server_cert"]
-
-            # Read the current content of the files (if they exist)
-            current_server_cert = (
-                self._container.pull(CERT_FILE).read() if self._container.exists(CERT_FILE) else ""
-            )
-            current_private_key = (
-                self._container.pull(KEY_FILE).read() if self._container.exists(KEY_FILE) else ""
-            )
-            current_ca_cert = (
-                self._container.pull(CLIENT_CA_FILE).read()
-                if self._container.exists(CLIENT_CA_FILE)
-                else ""
-            )
-
-            if (
-                current_server_cert == server_cert
-                and current_private_key == private_key
-                and current_ca_cert == ca_cert
-            ):
-                # No update needed
-                return False
-
-            # Save the workload certificates
-            self._container.push(CERT_FILE, server_cert or "", make_dirs=True)
-            self._container.push(KEY_FILE, private_key or "", make_dirs=True)
-            self._container.push(CLIENT_CA_FILE, ca_cert or "", make_dirs=True)
-            self._container.push(ROOT_CA_CERT, ca_cert or "", make_dirs=True)
-
-            # Save the cacert in the charm container for charm traces
-            ROOT_CA_CERT.write_text(ca_cert)
-        else:
-
-            if not (
-                self._container.exists(CERT_FILE)
-                or self._container.exists(KEY_FILE)
-                or self._container.exists(CLIENT_CA_FILE)
-                or self._container.exists(ROOT_CA_CERT)
-            ):
-                # No update needed
-                return False
-
-            self._container.remove_path(CERT_FILE, recursive=True)
-            self._container.remove_path(KEY_FILE, recursive=True)
-            self._container.remove_path(CLIENT_CA_FILE, recursive=True)
-            self._container.remove_path(ROOT_CA_CERT, recursive=True)
-
-            # Remove from charm container
-            ROOT_CA_CERT.unlink(missing_ok=True)
-
-        # FIXME: uncomment as soon as the nginx image contains the ca-certificates package
-        self._container.exec(["update-ca-certificates", "--fresh"]).wait()
-        subprocess.run(["update-ca-certificates", "--fresh"])
-
-        return True
+        any_changes = self._sync_tls_files(tls_data)
+        if any_changes:
+            logger.debug("running update-ca-certificates")
+            self._container.exec(["update-ca-certificates", "--fresh"]).wait()
+            subprocess.run(["update-ca-certificates", "--fresh"])
+        return any_changes
 
     def restart(self):
         """Restart the pebble service or start it if not already running, then wait for it to become ready.
@@ -736,7 +732,7 @@ class Worker(ops.Object):
         is_https = endpoint.startswith("https://")
 
         tls_data = self.cluster.get_tls_data()
-        server_ca_cert = tls_data.get("server_cert") if tls_data else None
+        server_ca_cert = tls_data.server_cert if tls_data else None
 
         if is_https:
             if server_ca_cert is None:
