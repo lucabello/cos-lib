@@ -469,6 +469,7 @@ def test_worker_does_not_restart_on_no_cert_changed(restart_mock, tmp_path):
     key = tmp_path / "key.key"
     client_ca = tmp_path / "client_ca.cert"
     s3_ca_chain = tmp_path / "s3_ca_chain.cert"
+    root_ca_mocked_path = tmp_path / "rootcacert"
 
     cert.write_text("cert")
     key.write_text("private")
@@ -484,6 +485,7 @@ def test_worker_does_not_restart_on_no_cert_changed(restart_mock, tmp_path):
             "key": Mount(KEY_FILE, key),
             "client_ca": Mount(CLIENT_CA_FILE, client_ca),
             "s3_ca_chain": Mount(S3_TLS_CA_CHAIN_FILE, s3_ca_chain),
+            "root_ca": Mount(root_ca_mocked_path, client_ca),
         },
     )
 

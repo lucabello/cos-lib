@@ -39,5 +39,11 @@ def patch_all(tmp_path: Path):
         stack.enter_context(
             patch("cosl.coordinated_workers.worker.ROOT_CA_CERT", new=tmp_path / "rootcacert")
         )
+        stack.enter_context(
+            patch(
+                "cosl.coordinated_workers.worker.ROOT_CA_CERT_PATH",
+                new=Path(tmp_path / "rootcacert"),
+            )
+        )
 
         yield

@@ -43,7 +43,8 @@ CERT_FILE = "/etc/worker/server.cert"
 S3_TLS_CA_CHAIN_FILE = "/etc/worker/s3_ca.crt"
 KEY_FILE = "/etc/worker/private.key"
 CLIENT_CA_FILE = "/etc/worker/ca.cert"
-ROOT_CA_CERT = Path("/usr/local/share/ca-certificates/ca.crt")
+ROOT_CA_CERT = "/usr/local/share/ca-certificates/ca.crt"
+ROOT_CA_CERT_PATH = Path(ROOT_CA_CERT)
 
 logger = logging.getLogger(__name__)
 
@@ -562,6 +563,7 @@ class Worker(ops.Object):
             (tls_data.server_cert, CERT_FILE),
             (private_key, KEY_FILE),
             (tls_data.s3_tls_ca_chain, S3_TLS_CA_CHAIN_FILE),
+            (tls_data.ca_cert, ROOT_CA_CERT),
         ):
             if not new_contents:
                 if self._container.exists(file):
@@ -586,9 +588,9 @@ class Worker(ops.Object):
         # Save the cacert in the charm container for charm traces
         # we do it unconditionally to avoid the extra complexity.
         if tls_data.ca_cert:
-            ROOT_CA_CERT.write_text(tls_data.ca_cert)
+            ROOT_CA_CERT_PATH.write_text(tls_data.ca_cert)
         else:
-            ROOT_CA_CERT.unlink(missing_ok=True)
+            ROOT_CA_CERT_PATH.unlink(missing_ok=True)
         return any_changes
 
     def _update_tls_certificates(self) -> bool:
@@ -739,14 +741,14 @@ class Worker(ops.Object):
                 raise RuntimeError(
                     "Cannot send traces to an https endpoint without a certificate."
                 )
-            elif not ROOT_CA_CERT.exists():
+            elif not ROOT_CA_CERT_PATH.exists():
                 # if endpoint is https and we have a tls integration BUT we don't have the
                 # server_cert on disk yet (this could race with _update_tls_certificates):
                 # put it there and proceed
-                ROOT_CA_CERT.parent.mkdir(parents=True, exist_ok=True)
-                ROOT_CA_CERT.write_text(server_ca_cert)
+                ROOT_CA_CERT_PATH.parent.mkdir(parents=True, exist_ok=True)
+                ROOT_CA_CERT_PATH.write_text(server_ca_cert)
 
-            return endpoint, str(ROOT_CA_CERT)
+            return endpoint, ROOT_CA_CERT
         else:
             return endpoint, None
 
