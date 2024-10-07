@@ -60,6 +60,26 @@ class Nginx:
     def configure_tls(self, private_key: str, server_cert: str, ca_cert: str) -> None:
         """Save the certificates file to disk and run update-ca-certificates."""
         if self._container.can_connect():
+            # Read the current content of the files (if they exist)
+            current_server_cert = (
+                self._container.pull(CERT_PATH).read() if self._container.exists(CERT_PATH) else ""
+            )
+            current_private_key = (
+                self._container.pull(KEY_PATH).read() if self._container.exists(KEY_PATH) else ""
+            )
+            current_ca_cert = (
+                self._container.pull(CA_CERT_PATH).read()
+                if self._container.exists(CA_CERT_PATH)
+                else ""
+            )
+
+            if (
+                current_server_cert == server_cert
+                and current_private_key == private_key
+                and current_ca_cert == ca_cert
+            ):
+                # No update needed
+                return
             self._container.push(KEY_PATH, private_key, make_dirs=True)
             self._container.push(CERT_PATH, server_cert, make_dirs=True)
             self._container.push(CA_CERT_PATH, ca_cert, make_dirs=True)
@@ -69,9 +89,12 @@ class Nginx:
     def delete_certificates(self) -> None:
         """Delete the certificate files from disk and run update-ca-certificates."""
         if self._container.can_connect():
-            self._container.remove_path(CERT_PATH, recursive=True)
-            self._container.remove_path(KEY_PATH, recursive=True)
-            self._container.remove_path(CA_CERT_PATH, recursive=True)
+            if self._container.exists(CERT_PATH):
+                self._container.remove_path(CERT_PATH, recursive=True)
+            if self._container.exists(KEY_PATH):
+                self._container.remove_path(KEY_PATH, recursive=True)
+            if self._container.exists(CA_CERT_PATH):
+                self._container.remove_path(CA_CERT_PATH, recursive=True)
             # FIXME: uncomment as soon as the nginx image contains the ca-certificates package
             # self._container.exec(["update-ca-certificates", "--fresh"])
 
@@ -142,13 +165,24 @@ class NginxPrometheusExporter:
 
     def configure_pebble_layer(self) -> None:
         """Configure pebble layer."""
-        self._container.add_layer("nginx-prometheus-exporter", self.layer, combine=True)
-        self._container.autostart()
+        if self._container.can_connect():
+            self._container.add_layer("nginx-prometheus-exporter", self.layer, combine=True)
+            self._container.autostart()
+
+    @property
+    def are_certificates_on_disk(self) -> bool:
+        """Return True if the certificates files are on disk."""
+        return (
+            self._container.can_connect()
+            and self._container.exists(CERT_PATH)
+            and self._container.exists(KEY_PATH)
+            and self._container.exists(CA_CERT_PATH)
+        )
 
     @property
     def layer(self) -> pebble.Layer:
         """Return the Pebble layer for Nginx Prometheus exporter."""
-        scheme = "https" if self._charm.coordinator.tls_available else "http"  # type: ignore
+        scheme = "https" if self.are_certificates_on_disk else "http"  # type: ignore
         return pebble.Layer(
             {
                 "summary": "nginx prometheus exporter layer",

@@ -236,7 +236,6 @@ class Coordinator(ops.Object):
         self.topology = cosl.JujuTopology.from_charm(self._charm)
         self._external_url = external_url
         self._worker_metrics_port = worker_metrics_port
-
         self._endpoints = endpoints
 
         _validate_container_name(container_name, resources_requests)
@@ -345,41 +344,7 @@ class Coordinator(ops.Object):
             )
             return
 
-        # lifecycle
-        self.framework.observe(self._charm.on.config_changed, self._on_config_changed)
-
-        # nginx
-        self.framework.observe(self._charm.on.nginx_pebble_ready, self._on_nginx_pebble_ready)
-        self.framework.observe(
-            self._charm.on.nginx_prometheus_exporter_pebble_ready,
-            self._on_nginx_prometheus_exporter_pebble_ready,
-        )
-
-        # s3
-        self.framework.observe(
-            self.s3_requirer.on.credentials_changed, self._on_s3_credentials_changed
-        )
-        self.framework.observe(self.s3_requirer.on.credentials_gone, self._on_s3_credentials_gone)
-
-        # tracing
-        # self.framework.observe(self._charm.on.peers_relation_created, self._on_peers_relation_created)
-        # self.framework.observe(self._charm.on.peers_relation_changed, self._on_peers_relation_changed)
-
-        # logging
-        self.framework.observe(
-            self._logging.on.loki_push_api_endpoint_joined,
-            self._on_loki_relation_changed,
-        )
-        self.framework.observe(
-            self._logging.on.loki_push_api_endpoint_departed,
-            self._on_loki_relation_changed,
-        )
-
-        # tls
-        self.framework.observe(self.cert_handler.on.cert_changed, self._on_cert_handler_changed)
-
-        # cluster
-        self.framework.observe(self.cluster.on.changed, self._on_cluster_changed)
+        self._reconcile()
 
     ######################
     # UTILITY PROPERTIES #
@@ -578,59 +543,10 @@ class Coordinator(ops.Object):
     ##################
     # EVENT HANDLERS #
     ##################
-    def _on_cert_handler_changed(self, _: ops.RelationChangedEvent):
-        if self.tls_available:
-            logger.debug("enabling TLS")
-            self.nginx.configure_tls(
-                server_cert=self.cert_handler.server_cert,  # type: ignore
-                ca_cert=self.cert_handler.ca_cert,  # type: ignore
-                private_key=self.cert_handler.private_key,  # type: ignore
-            )
-        else:
-            logger.debug("disabling TLS")
-            self.nginx.delete_certificates()
-
-        # notify the cluster
-        self.update_cluster()
-
-    def _on_cluster_changed(self, _: ops.RelationEvent):
-        self.update_cluster()
-
-    def _on_nginx_pebble_ready(self, _: ops.PebbleReadyEvent):
-        self.update_cluster()
-
-    def _on_nginx_prometheus_exporter_pebble_ready(self, _: ops.PebbleReadyEvent):
-        self.update_cluster()
-
-    def _on_loki_relation_changed(self, _: ops.EventBase):
-        self.update_cluster()
-
-    def _on_s3_credentials_changed(self, _: ops.RelationChangedEvent):
-        self._on_s3_changed()
-
-    def _on_s3_credentials_gone(self, _: ops.RelationChangedEvent):
-        self._on_s3_changed()
-
-    def _on_s3_changed(self):
-        self.update_cluster()
 
     def _on_peers_relation_created(self, event: ops.RelationCreatedEvent):
         if self._local_ip:
             event.relation.data[self._charm.unit]["local-ip"] = self._local_ip
-
-    def _on_peers_relation_changed(self, _: ops.RelationChangedEvent):
-        self.update_cluster()
-
-    def _on_config_changed(self, _: ops.ConfigChangedEvent):
-        if self.tls_available:
-            self.nginx.configure_tls(
-                server_cert=self.cert_handler.server_cert,  # type: ignore
-                ca_cert=self.cert_handler.ca_cert,  # type: ignore
-                private_key=self.cert_handler.private_key,  # type: ignore
-            )
-        else:
-            self.nginx.delete_certificates()
-        self.update_cluster()
 
     # keep this event handler at the bottom
     def _on_collect_unit_status(self, e: ops.CollectStatusEvent):
@@ -662,6 +578,30 @@ class Coordinator(ops.Object):
     ###################
     # UTILITY METHODS #
     ###################
+    def _update_nginx_tls_certificates(self) -> None:
+        """Update the TLS certificates for nginx on disk according to their availability."""
+        if self.tls_available:
+            self.nginx.configure_tls(
+                server_cert=self.cert_handler.server_cert,  # type: ignore
+                ca_cert=self.cert_handler.ca_cert,  # type: ignore
+                private_key=self.cert_handler.private_key,  # type: ignore
+            )
+        else:
+            self.nginx.delete_certificates()
+
+    def _reconcile(self):
+        """Run all logic that is independent of what event we're processing."""
+        # There could be a race between the resource patch and pebble operations
+        # i.e., charm code proceeds beyond a can_connect guard, and then lightkube patches the statefulset
+        # and the workload is no longer available.
+        # `resources_patch` might be `None` when no resources requests or limits are requested by the charm.
+        if self.resources_patch and not self.resources_patch.is_ready():
+            logger.debug("Resource patch not ready yet. Skipping cluster update step.")
+            return
+
+        self._update_nginx_tls_certificates()
+        self.update_cluster()
+
     @property
     def _peers(self) -> Optional[Set[ops.model.Unit]]:
         relation = self.model.get_relation("peers")
@@ -698,14 +638,6 @@ class Coordinator(ops.Object):
 
     def update_cluster(self):
         """Build the workers config and distribute it to the relations."""
-        # There could be a race between the resource patch and pebble operations
-        # i.e., charm code proceeds beyond a can_connect guard, and then lightkube patches the statefulset
-        # and the workload is no longer available.
-        # `resources_patch` might be `None` when no resources requests or limits are requested by the charm.
-        if self.resources_patch and not self.resources_patch.is_ready():
-            logger.debug("Resource patch not ready yet. Skipping cluster update step.")
-            return
-
         self.nginx.configure_pebble_layer()
         self.nginx_exporter.configure_pebble_layer()
         if not self.is_coherent:
