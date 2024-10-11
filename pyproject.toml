@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cosl"
-version = "0.0.40"
+version = "0.0.41"
 authors = [
   { name="sed-i", email="82407168+sed-i@users.noreply.github.com" },
 ]

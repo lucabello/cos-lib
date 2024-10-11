@@ -714,8 +714,8 @@ class Worker(ops.Object):
         Usage:
           assuming you are using charm_tracing >= v1.9:
         >>> from ops import CharmBase
-        >>> from lib.charms.tempo_k8s.v1.charm_tracing import trace_charm
-        >>> from lib.charms.tempo_k8s.v2.tracing import charm_tracing_config
+        >>> from lib.charms.tempo_coordinator_k8s.v0.charm_tracing import trace_charm
+        >>> from lib.charms.tempo_coordinator_k8s.v0.tracing import charm_tracing_config
         >>> @trace_charm(tracing_endpoint="my_endpoint", cert_path="cert_path")
         >>> class MyCharm(CharmBase):
         >>>     def __init__(self, ...):

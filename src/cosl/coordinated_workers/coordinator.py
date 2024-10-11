@@ -47,21 +47,21 @@ check_libs_installed(
     "charms.observability_libs.v1.cert_handler",
     "charms.prometheus_k8s.v0.prometheus_scrape",
     "charms.loki_k8s.v1.loki_push_api",
-    "charms.tempo_k8s.v2.tracing",
+    "charms.tempo_coordinator_k8s.v0.tracing",
     "charms.observability_libs.v0.kubernetes_compute_resources_patch",
     "charms.tls_certificates_interface.v3.tls_certificates",
 )
 
 from charms.data_platform_libs.v0.s3 import S3Requirer
 from charms.grafana_k8s.v0.grafana_dashboard import GrafanaDashboardProvider
-from charms.loki_k8s.v1.loki_push_api import LokiPushApiConsumer
+from charms.loki_k8s.v1.loki_push_api import LogForwarder, LokiPushApiConsumer
 from charms.observability_libs.v0.kubernetes_compute_resources_patch import (
     KubernetesComputeResourcesPatch,
     adjust_resource_requirements,
 )
 from charms.observability_libs.v1.cert_handler import VAULT_SECRET_LABEL, CertHandler
 from charms.prometheus_k8s.v0.prometheus_scrape import MetricsEndpointProvider
-from charms.tempo_k8s.v2.tracing import TracingEndpointRequirer
+from charms.tempo_coordinator_k8s.v0.tracing import TracingEndpointRequirer
 from lightkube.models.core_v1 import ResourceRequirements
 
 logger = logging.getLogger(__name__)
@@ -283,6 +283,7 @@ class Coordinator(ops.Object):
         )
 
         self._logging = LokiPushApiConsumer(self._charm, relation_name=self._endpoints["logging"])
+        self._log_forwarder = LogForwarder(self._charm, relation_name=self._endpoints["logging"])
 
         # Provide ability for this to be scraped by Prometheus using prometheus_scrape
         refresh_events = [self._charm.on.update_status, self.cluster.on.changed]
