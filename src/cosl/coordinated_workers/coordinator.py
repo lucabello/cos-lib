@@ -90,11 +90,11 @@ class S3ConnectionInfo(pydantic.BaseModel):
 
     endpoint: str
     bucket: str
-    access_key: str = pydantic.Field(alias="access-key")
-    secret_key: str = pydantic.Field(alias="secret-key")
+    access_key: str = pydantic.Field(alias="access-key")  # type: ignore
+    secret_key: str = pydantic.Field(alias="secret-key")  # type: ignore
 
     region: Optional[str] = pydantic.Field(None)
-    tls_ca_chain: Optional[List[str]] = pydantic.Field(None, alias="tls-ca-chain")
+    tls_ca_chain: Optional[List[str]] = pydantic.Field(None, alias="tls-ca-chain")  # type: ignore
 
     @property
     def ca_cert(self) -> Optional[str]:
@@ -273,7 +273,6 @@ class Coordinator(ops.Object):
             key="coordinator-server-cert",
             # update certificate with new SANs whenever a worker is added/removed
             sans=[self.hostname, *self.cluster.gather_addresses()],
-            refresh_events=[self.cluster.on.changed],
         )
 
         self.s3_requirer = S3Requirer(self._charm, self._endpoints["s3"])

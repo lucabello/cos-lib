@@ -287,7 +287,7 @@ class ClusterProvider(Object):
     ) -> None:
         """Publish the config to all related worker clusters."""
         for relation in self._relations:
-            if relation:
+            if relation and self._remote_data_ready(relation):
                 local_app_databag = ClusterProviderAppData(
                     worker_config=worker_config,
                     loki_endpoints=loki_endpoints,
@@ -402,6 +402,31 @@ class ClusterProvider(Object):
         if address_set := addresses_by_role.get(role, None):
             return address_set.pop()
         return None
+
+    def _remote_data_ready(self, relation: ops.Relation) -> bool:
+        """Verify that each worker unit and the worker leader have published their data to the cluster relation.
+
+        - unit address is published
+        - roles are published
+        """
+        if not relation.app or not relation.units or not relation.data:
+            return False
+
+        # check if unit data is published
+        for worker_unit in relation.units:
+            try:
+                ClusterRequirerUnitData.load(relation.data[worker_unit])
+            except DataValidationError:
+                return False
+
+        # check if app data is published
+        if self._charm.unit.is_leader():
+            try:
+                ClusterRequirerAppData.load(relation.data[relation.app])
+            except DataValidationError:
+                return False
+
+        return True
 
 
 class ClusterRequirer(Object):
