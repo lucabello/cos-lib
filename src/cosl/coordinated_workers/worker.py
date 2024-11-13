@@ -310,10 +310,15 @@ class Worker(ops.Object):
             logger.debug(f"GET {check_endpoint} returned: {raw_out!r}.")
             return ServiceEndpointStatus.starting
 
-        except HTTPError:
-            logger.debug("Error getting readiness endpoint: server not up (yet)")
-        except Exception:
-            logger.exception("Unexpected exception getting readiness endpoint")
+        except HTTPError as e:
+            logger.debug(f"Error getting readiness endpoint, server not up (yet): {e}")
+        except ConnectionResetError as e:
+            logger.warning(
+                f"Error getting readiness endpoint (check the workload container logs for details): {e}"
+            )
+        except Exception as e:
+            logger.exception(f"Unexpected exception getting readiness endpoint: {e}")
+
         return ServiceEndpointStatus.down
 
     def _on_collect_status(self, e: ops.CollectStatusEvent):
