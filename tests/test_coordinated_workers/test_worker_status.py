@@ -9,7 +9,10 @@ import tenacity
 from ops import testing
 
 from cosl.coordinated_workers.interface import ClusterProviderAppData
-from cosl.coordinated_workers.worker import Worker, WorkerError
+from cosl.coordinated_workers.worker import (
+    NoReadinessCheckEndpointConfiguredError,
+    Worker,
+)
 
 
 @pytest.fixture(params=[True, False])
@@ -247,7 +250,7 @@ def test_access_readiness_no_endpoint_raises():
             )
 
     # THEN calling .check_readiness raises
-    with pytest.raises(WorkerError):
+    with pytest.raises(NoReadinessCheckEndpointConfiguredError):
         worker.check_readiness()  # noqa
 
 

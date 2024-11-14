@@ -244,9 +244,10 @@ def test_s3_integration(
         assert coordinator._s3_config["insecure"] is (not tls_ca_chain)
 
 
-def test_tracing_receivers_urls(coordinator_state: State, coordinator_charm: ops.CharmBase):
-
-    charm_tracing_relation = Relation(
+def test_tracing_receivers_urls(
+    coordinator_state: testing.State, coordinator_charm: ops.CharmBase
+):
+    charm_tracing_relation = testing.Relation(
         endpoint="my-charm-tracing",
         remote_app_data={
             "receivers": json.dumps(
@@ -254,7 +255,7 @@ def test_tracing_receivers_urls(coordinator_state: State, coordinator_charm: ops
             )
         },
     )
-    workload_tracing_relation = Relation(
+    workload_tracing_relation = testing.Relation(
         endpoint="my-workload-tracing",
         remote_app_data={
             "receivers": json.dumps(
@@ -265,11 +266,11 @@ def test_tracing_receivers_urls(coordinator_state: State, coordinator_charm: ops
             )
         },
     )
-    ctx = Context(coordinator_charm, meta=coordinator_charm.META)
-    with ctx.manager(
-        "update-status",
-        state=coordinator_state.replace(
-            relations=[charm_tracing_relation, workload_tracing_relation]
+    ctx = testing.Context(coordinator_charm, meta=coordinator_charm.META)
+    with ctx(
+        ctx.on.update_status(),
+        state=dataclasses.replace(
+            coordinator_state, relations=[charm_tracing_relation, workload_tracing_relation]
         ),
     ) as mgr:
         coordinator: Coordinator = mgr.charm.coordinator

@@ -18,7 +18,7 @@ import ops
 import tenacity
 import yaml
 from ops import MaintenanceStatus, StatusBase
-from ops.model import ActiveStatus, BlockedStatus, WaitingStatus
+from ops.model import ActiveStatus, BlockedStatus, ModelError, WaitingStatus
 from ops.pebble import Check, Layer, PathError, Plan, ProtocolError
 
 from cosl import JujuTopology
@@ -75,6 +75,10 @@ _ResourceLimitOptionsMapping = TypedDict(
 
 class WorkerError(Exception):
     """Base class for exceptions raised by this module."""
+
+
+class NoReadinessCheckEndpointConfiguredError(Exception):
+    """Internal error when readiness check endpoint is missing."""
 
 
 class ServiceEndpointStatus(Enum):
@@ -255,19 +259,27 @@ class Worker(ops.Object):
         # we really don't want this code to raise errors, so we blanket catch all.
         try:
             services = self._container.get_services(*layer.services.keys())
-            running_status = {name: svc.is_running() for name, svc in services.items()}
-            if not all(running_status.values()):
-                if any(running_status.values()):
-                    starting_services = tuple(
-                        name for name, running in running_status.items() if not running
+            if not services:
+                logger.debug("No services found in pebble plan.")
+            else:
+                services_not_running = [
+                    name for name, svc in services.items() if not svc.is_running()
+                ]
+                if services_not_running:
+                    logger.debug(
+                        f"Some services which should be running are not: {services_not_running}."
                     )
-                    logger.info(
-                        f"Some services which should be running are not: {starting_services}."
-                    )
-                    return ServiceEndpointStatus.starting
+                    return ServiceEndpointStatus.down
+                else:
+                    logger.debug("All pebble services up.")
 
-                logger.info("All services are down.")
-                return ServiceEndpointStatus.down
+            # so far as pebble knows all services are up, now let's see if
+            # the readiness endpoint confirm that
+            return self.check_readiness()
+
+        except NoReadinessCheckEndpointConfiguredError:
+            # assume up
+            return ServiceEndpointStatus.up
 
         except Exception:
             logger.exception(
@@ -276,16 +288,11 @@ class Worker(ops.Object):
             )
             return ServiceEndpointStatus.down
 
-        return self.check_readiness()
-
     def check_readiness(self) -> ServiceEndpointStatus:
         """If the user has configured a readiness check endpoint, GET it and check the workload status."""
         check_endpoint = self._readiness_check_endpoint
         if not check_endpoint:
-            raise WorkerError(
-                "cannot check readiness without a readiness_check_endpoint configured. "
-                "Pass one to Worker on __init__."
-            )
+            raise NoReadinessCheckEndpointConfiguredError()
 
         try:
             with urllib.request.urlopen(check_endpoint(self)) as response:
@@ -506,7 +513,20 @@ class Worker(ops.Object):
         self.cluster.publish_unit_address(socket.getfqdn())
         if self._charm.unit.is_leader() and self.roles:
             logger.info(f"publishing roles: {self.roles}")
-            self.cluster.publish_app_roles(self.roles)
+            try:
+                self.cluster.publish_app_roles(self.roles)
+            except ModelError as e:
+                # if we are handling an event prior to 'install', we could be denied write access
+                # Swallowing the exception here relies on the reconciler pattern - this will be
+                # retried at the next occasion and eventually that'll be after 'install'.
+                if "ERROR permission denied (unauthorized access)" in e.args:
+                    logger.debug(
+                        "relation-set failed with a permission denied error. "
+                        "This could be a transient issue."
+                    )
+                else:
+                    # let it burn, we clearly don't know what's going on
+                    raise
 
     def _running_worker_config(self) -> Optional[Dict[str, Any]]:
         """Return the worker config as dict, or None if retrieval failed."""
@@ -666,11 +686,24 @@ class Worker(ops.Object):
                     # restart all services that our layer is responsible for
                     self._container.restart(*service_names)
 
+        except ops.pebble.ConnectionError:
+            logger.debug(
+                "failed to (re)start worker jobs because the container unexpectedly died; "
+                "this might mean the unit is still settling after deploy or an upgrade. "
+                "This should resolve itself."
+                # or it's a juju bug^TM
+            )
+            return False
+
         except ops.pebble.ChangeError:
             logger.error(
                 "failed to (re)start worker jobs. This usually means that an external resource (such as s3) "
                 "that the software needs to start is not available."
             )
+            raise
+
+        except Exception:
+            logger.exception("failed to (re)start worker jobs due to an unexpected error.")
             raise
 
         try:
@@ -691,15 +724,18 @@ class Worker(ops.Object):
                 # set result to status; will retry unless it's up
                 attempt.retry_state.set_result(self.status is ServiceEndpointStatus.up)
 
-        except WorkerError:
-            #  unable to check worker readiness: no readiness_check_endpoint configured.
-            # this status is already set on the unit so no need to log it
-            pass
+        except NoReadinessCheckEndpointConfiguredError:
+            # collect_unit_status will surface this to the user
+            logger.warning(
+                "could not check worker service readiness: no check endpoint configured. "
+                "Pass one to the Worker."
+            )
+            return True
 
         except Exception:
             logger.exception("unexpected error while attempting to determine worker status")
 
-        return False
+        return self.status is ServiceEndpointStatus.up
 
     def running_version(self) -> Optional[str]:
         """Get the running version from the worker process."""
