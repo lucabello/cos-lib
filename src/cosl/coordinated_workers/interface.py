@@ -182,8 +182,10 @@ class ClusterProviderAppData(DatabagModel):
     ### self-monitoring stuff
     loki_endpoints: Optional[Dict[str, str]] = None
     """Endpoints to which the workload (and the worker charm) can push logs to."""
-    tracing_receivers: Optional[Dict[str, str]] = None
-    """Endpoints to which the workload (and the worker charm) can push traces to."""
+    charm_tracing_receivers: Optional[Dict[str, str]] = None
+    """Endpoints to which the the worker charm can push charm traces to."""
+    workload_tracing_receivers: Optional[Dict[str, str]] = None
+    """Endpoints to which the the worker can push workload traces to."""
     remote_write_endpoints: Optional[List[RemoteWriteEndpoint]] = None
     """Endpoints to which the workload (and the worker charm) can push metrics to."""
 
@@ -282,7 +284,8 @@ class ClusterProvider(Object):
         s3_tls_ca_chain: Optional[str] = None,
         privkey_secret_id: Optional[str] = None,
         loki_endpoints: Optional[Dict[str, str]] = None,
-        tracing_receivers: Optional[Dict[str, str]] = None,
+        charm_tracing_receivers: Optional[Dict[str, str]] = None,
+        workload_tracing_receivers: Optional[Dict[str, str]] = None,
         remote_write_endpoints: Optional[List[RemoteWriteEndpoint]] = None,
     ) -> None:
         """Publish the config to all related worker clusters."""
@@ -294,7 +297,8 @@ class ClusterProvider(Object):
                     ca_cert=ca_cert,
                     server_cert=server_cert,
                     privkey_secret_id=privkey_secret_id,
-                    tracing_receivers=tracing_receivers,
+                    charm_tracing_receivers=charm_tracing_receivers,
+                    workload_tracing_receivers=workload_tracing_receivers,
                     remote_write_endpoints=remote_write_endpoints,
                     s3_tls_ca_chain=s3_tls_ca_chain,
                 )
@@ -573,11 +577,18 @@ class ClusterRequirer(Object):
             s3_tls_ca_chain=data.s3_tls_ca_chain,
         )
 
-    def get_tracing_receivers(self) -> Optional[Dict[str, str]]:
-        """Fetch the tracing receivers from the coordinator databag."""
+    def get_charm_tracing_receivers(self) -> Dict[str, str]:
+        """Fetch the charm tracing receivers from the coordinator databag."""
         data = self._get_data_from_coordinator()
         if data:
-            return data.tracing_receivers or {}
+            return data.charm_tracing_receivers or {}
+        return {}
+
+    def get_workload_tracing_receivers(self) -> Dict[str, str]:
+        """Fetch the workload tracing receivers from the coordinator databag."""
+        data = self._get_data_from_coordinator()
+        if data:
+            return data.workload_tracing_receivers or {}
         return {}
 
     def get_remote_write_endpoints(self) -> List[RemoteWriteEndpoint]:

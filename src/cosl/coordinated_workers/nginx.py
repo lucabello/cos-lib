@@ -4,6 +4,7 @@
 """Workload manager for Nginx. Used by the coordinator to load-balance and group the workers."""
 
 import logging
+from pathlib import Path
 from typing import Callable, Optional, TypedDict
 
 from ops import CharmBase, pebble
@@ -83,6 +84,11 @@ class Nginx:
             self._container.push(KEY_PATH, private_key, make_dirs=True)
             self._container.push(CERT_PATH, server_cert, make_dirs=True)
             self._container.push(CA_CERT_PATH, ca_cert, make_dirs=True)
+
+            # push CA cert to charm container
+            Path(CA_CERT_PATH).parent.mkdir(parents=True, exist_ok=True)
+            Path(CA_CERT_PATH).write_text(ca_cert)
+
             # FIXME: uncomment as soon as the nginx image contains the ca-certificates package
             # self._container.exec(["update-ca-certificates", "--fresh"])
 
@@ -95,6 +101,8 @@ class Nginx:
                 self._container.remove_path(KEY_PATH, recursive=True)
             if self._container.exists(CA_CERT_PATH):
                 self._container.remove_path(CA_CERT_PATH, recursive=True)
+            if Path(CA_CERT_PATH).exists():
+                Path(CA_CERT_PATH).unlink(missing_ok=True)
             # FIXME: uncomment as soon as the nginx image contains the ca-certificates package
             # self._container.exec(["update-ca-certificates", "--fresh"])
 

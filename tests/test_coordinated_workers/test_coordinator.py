@@ -20,7 +20,8 @@ def coordinator_state():
         for endpoint, interface in {
             "my-certificates": {"interface": "certificates"},
             "my-logging": {"interface": "loki_push_api"},
-            "my-tracing": {"interface": "tracing"},
+            "my-charm-tracing": {"interface": "tracing"},
+            "my-workload-tracing": {"interface": "tracing"},
         }.items()
     }
     requires_relations["my-s3"] = Relation(
@@ -75,7 +76,8 @@ def coordinator_charm(request):
                 "my-certificates": {"interface": "certificates"},
                 "my-cluster": {"interface": "cluster"},
                 "my-logging": {"interface": "loki_push_api"},
-                "my-tracing": {"interface": "tracing"},
+                "my-charm-tracing": {"interface": "tracing", "limit": 1},
+                "my-workload-tracing": {"interface": "tracing", "limit": 1},
                 "my-s3": {"interface": "s3"},
             },
             "provides": {
@@ -116,7 +118,8 @@ def coordinator_charm(request):
                     "grafana-dashboards": "my-dashboards",
                     "logging": "my-logging",
                     "metrics": "my-metrics",
-                    "tracing": "my-tracing",
+                    "charm-tracing": "my-charm-tracing",
+                    "workload-tracing": "my-workload-tracing",
                     "s3": "my-s3",
                 },
                 nginx_config=lambda coordinator: f"nginx configuration for {coordinator._charm.meta.name}",
@@ -124,7 +127,6 @@ def coordinator_charm(request):
                 # nginx_options: Optional[NginxMappingOverrides] = None,
                 # is_coherent: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
                 # is_recommended: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
-                # tracing_receivers: Optional[Callable[[], Optional[Dict[str, str]]]] = None,
             )
 
     return MyCoordinator
@@ -239,3 +241,41 @@ def test_s3_integration(
         assert coordinator.s3_connection_info.tls_ca_chain == tls_ca_chain
         assert coordinator._s3_config["endpoint"] == endpoint_stripped
         assert coordinator._s3_config["insecure"] is (not tls_ca_chain)
+
+
+def test_tracing_receivers_urls(coordinator_state: State, coordinator_charm: ops.CharmBase):
+
+    charm_tracing_relation = Relation(
+        endpoint="my-charm-tracing",
+        remote_app_data={
+            "receivers": json.dumps(
+                [{"protocol": {"name": "otlp_http", "type": "http"}, "url": "1.2.3.4:4318"}]
+            )
+        },
+    )
+    workload_tracing_relation = Relation(
+        endpoint="my-workload-tracing",
+        remote_app_data={
+            "receivers": json.dumps(
+                [
+                    {"protocol": {"name": "otlp_http", "type": "http"}, "url": "5.6.7.8:4318"},
+                    {"protocol": {"name": "otlp_grpc", "type": "grpc"}, "url": "5.6.7.8:4317"},
+                ]
+            )
+        },
+    )
+    ctx = Context(coordinator_charm, meta=coordinator_charm.META)
+    with ctx.manager(
+        "update-status",
+        state=coordinator_state.replace(
+            relations=[charm_tracing_relation, workload_tracing_relation]
+        ),
+    ) as mgr:
+        coordinator: Coordinator = mgr.charm.coordinator
+        assert coordinator._charm_tracing_receivers_urls == {
+            "otlp_http": "1.2.3.4:4318",
+        }
+        assert coordinator._workload_tracing_receivers_urls == {
+            "otlp_http": "5.6.7.8:4318",
+            "otlp_grpc": "5.6.7.8:4317",
+        }

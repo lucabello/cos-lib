@@ -727,7 +727,7 @@ class Worker(ops.Object):
         >>>         self.worker = Worker(...)
         >>>         self.my_endpoint, self.cert_path = self.worker.charm_tracing_config()
         """
-        receivers = self.cluster.get_tracing_receivers()
+        receivers = self.cluster.get_charm_tracing_receivers()
 
         if not receivers:
             return None, None

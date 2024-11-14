@@ -61,7 +61,7 @@ from charms.observability_libs.v0.kubernetes_compute_resources_patch import (
 )
 from charms.observability_libs.v1.cert_handler import VAULT_SECRET_LABEL, CertHandler
 from charms.prometheus_k8s.v0.prometheus_scrape import MetricsEndpointProvider
-from charms.tempo_coordinator_k8s.v0.tracing import TracingEndpointRequirer
+from charms.tempo_coordinator_k8s.v0.tracing import ReceiverProtocol, TracingEndpointRequirer
 from lightkube.models.core_v1 import ResourceRequirements
 
 logger = logging.getLogger(__name__)
@@ -159,7 +159,8 @@ _EndpointMapping = TypedDict(
         "grafana-dashboards": str,
         "logging": str,
         "metrics": str,
-        "tracing": str,
+        "charm-tracing": str,
+        "workload-tracing": str,
         "s3": str,
     },
     total=True,
@@ -195,11 +196,11 @@ class Coordinator(ops.Object):
         nginx_options: Optional[NginxMappingOverrides] = None,
         is_coherent: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
         is_recommended: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
-        tracing_receivers: Optional[Callable[[], Optional[Dict[str, str]]]] = None,
         resources_limit_options: Optional[_ResourceLimitOptionsMapping] = None,
         resources_requests: Optional[Callable[["Coordinator"], Dict[str, str]]] = None,
         container_name: Optional[str] = None,
         remote_write_endpoints: Optional[Callable[[], List[RemoteWriteEndpoint]]] = None,
+        workload_tracing_protocols: Optional[List[ReceiverProtocol]] = None,
     ):
         """Constructor for a Coordinator object.
 
@@ -215,7 +216,6 @@ class Coordinator(ops.Object):
             nginx_options: Non-default config options for Nginx.
             is_coherent: Custom coherency checker for a minimal deployment.
             is_recommended: Custom coherency checker for a recommended deployment.
-            tracing_receivers: Endpoints to which the workload (and the worker charm) can push traces to.
             resources_limit_options: A dictionary containing resources limit option names. The dictionary should include
                 "cpu_limit" and "memory_limit" keys with values as option names, as defined in the config.yaml.
                 If no dictionary is provided, the default option names "cpu_limit" and "memory_limit" would be used.
@@ -226,6 +226,8 @@ class Coordinator(ops.Object):
                 Required if `resources_requests` is provided.
             remote_write_endpoints: A function generating endpoints to which the workload
                 and the worker charm can push metrics to.
+            workload_tracing_protocols: A list of protocols that the worker intends to send
+                workload traces with.
 
         Raises:
         ValueError:
@@ -250,7 +252,6 @@ class Coordinator(ops.Object):
 
         self._is_coherent = is_coherent
         self._is_recommended = is_recommended
-        self._tracing_receivers_getter = tracing_receivers
         self._resources_requests_getter = (
             partial(resources_requests, self) if resources_requests is not None else None
         )
@@ -299,10 +300,15 @@ class Coordinator(ops.Object):
             refresh_event=refresh_events,
         )
 
-        self.tracing = TracingEndpointRequirer(
+        self.charm_tracing = TracingEndpointRequirer(
             self._charm,
-            relation_name=self._endpoints["tracing"],
+            relation_name=self._endpoints["charm-tracing"],
             protocols=["otlp_http"],
+        )
+        self.workload_tracing = TracingEndpointRequirer(
+            self._charm,
+            relation_name=self._endpoints["workload-tracing"],
+            protocols=workload_tracing_protocols,
         )
 
         # Resources patch
@@ -349,6 +355,20 @@ class Coordinator(ops.Object):
     ######################
     # UTILITY PROPERTIES #
     ######################
+
+    @property
+    def _charm_tracing_receivers_urls(self) -> Dict[str, str]:
+        """Returns the charm tracing enabled receivers with their corresponding endpoints."""
+        endpoints = self.charm_tracing.get_all_endpoints()
+        receivers = endpoints.receivers if endpoints else ()
+        return {receiver.protocol.name: receiver.url for receiver in receivers}
+
+    @property
+    def _workload_tracing_receivers_urls(self) -> Dict[str, str]:
+        """Returns the workload tracing enabled receivers with their corresponding endpoints."""
+        endpoints = self.workload_tracing.get_all_endpoints()
+        receivers = endpoints.receivers if endpoints else ()
+        return {receiver.protocol.name: receiver.url for receiver in receivers}
 
     @property
     def is_coherent(self) -> bool:
@@ -661,9 +681,8 @@ class Coordinator(ops.Object):
             privkey_secret_id=(
                 self.cluster.grant_privkey(VAULT_SECRET_LABEL) if self.tls_available else None
             ),
-            tracing_receivers=(
-                self._tracing_receivers_getter() if self._tracing_receivers_getter else None
-            ),
+            charm_tracing_receivers=self._charm_tracing_receivers_urls,
+            workload_tracing_receivers=self._workload_tracing_receivers_urls,
             remote_write_endpoints=(
                 self.remote_write_endpoints_getter()
                 if self.remote_write_endpoints_getter
