@@ -1,9 +1,9 @@
 import logging
 import tempfile
 
+import ops
 import pytest
-from ops import CharmBase
-from scenario import Container, Context, ExecOutput, Mount, State
+from ops import testing
 
 from src.cosl.coordinated_workers.nginx import (
     CA_CERT_PATH,
@@ -25,7 +25,7 @@ def certificate_mounts():
 
     mounts = {}
     for cert_path, temp_file in temp_files.items():
-        mounts[cert_path] = Mount(cert_path, temp_file.name)
+        mounts[cert_path] = testing.Mount(location=cert_path, source=temp_file.name)
 
     # TODO: Do we need to clean up the temp files since delete=False was set?
     return mounts
@@ -33,17 +33,21 @@ def certificate_mounts():
 
 @pytest.fixture
 def nginx_context():
-    return Context(CharmBase, meta={"name": "foo", "containers": {"nginx": {"type": "oci-image"}}})
+    return testing.Context(
+        ops.CharmBase, meta={"name": "foo", "containers": {"nginx": {"type": "oci-image"}}}
+    )
 
 
-def test_certs_on_disk(certificate_mounts: dict, nginx_context: Context):
+def test_certs_on_disk(certificate_mounts: dict, nginx_context: testing.Context):
     # GIVEN any charm with a container
     ctx = nginx_context
 
     # WHEN we process any event
-    with ctx.manager(
-        "update-status",
-        state=State(containers=[Container("nginx", can_connect=True, mounts=certificate_mounts)]),
+    with ctx(
+        ctx.on.update_status(),
+        state=testing.State(
+            containers={testing.Container("nginx", can_connect=True, mounts=certificate_mounts)}
+        ),
     ) as mgr:
         charm = mgr.charm
         nginx = Nginx(charm, lambda: "foo_string", None)
@@ -52,16 +56,18 @@ def test_certs_on_disk(certificate_mounts: dict, nginx_context: Context):
         assert nginx.are_certificates_on_disk
 
 
-def test_certs_deleted(certificate_mounts: dict, nginx_context: Context):
+def test_certs_deleted(certificate_mounts: dict, nginx_context: testing.Context):
     # Test deleting the certificates.
 
     # GIVEN any charm with a container
     ctx = nginx_context
 
     # WHEN we process any event
-    with ctx.manager(
-        "update-status",
-        state=State(containers=[Container("nginx", can_connect=True, mounts=certificate_mounts)]),
+    with ctx(
+        ctx.on.update_status(),
+        state=testing.State(
+            containers={testing.Container("nginx", can_connect=True, mounts=certificate_mounts)}
+        ),
     ) as mgr:
         charm = mgr.charm
         nginx = Nginx(charm, lambda: "foo_string", None)
@@ -73,23 +79,23 @@ def test_certs_deleted(certificate_mounts: dict, nginx_context: Context):
         assert not nginx.are_certificates_on_disk
 
 
-def test_reload_calls_nginx_binary_successfully(nginx_context: Context):
+def test_reload_calls_nginx_binary_successfully(nginx_context: testing.Context):
     # Test that the reload method calls the nginx binary without error.
 
     # GIVEN any charm with a container
     ctx = nginx_context
 
     # WHEN we process any event
-    with ctx.manager(
-        "update-status",
-        state=State(
-            containers=[
-                Container(
+    with ctx(
+        ctx.on.update_status(),
+        state=testing.State(
+            containers={
+                testing.Container(
                     "nginx",
                     can_connect=True,
-                    exec_mock={("nginx", "-s", "reload"): ExecOutput(return_code=0)},
+                    execs={testing.Exec(("nginx", "-s", "reload"), return_code=0)},
                 )
-            ]
+            },
         ),
     ) as mgr:
         charm = mgr.charm
@@ -100,7 +106,7 @@ def test_reload_calls_nginx_binary_successfully(nginx_context: Context):
         assert nginx.reload() is None
 
 
-def test_has_config_changed(nginx_context: Context):
+def test_has_config_changed(nginx_context: testing.Context):
     # Test changing the nginx config and catching the change.
 
     # GIVEN any charm with a container and a nginx config file
@@ -111,16 +117,18 @@ def test_has_config_changed(nginx_context: Context):
         f.write("foo")
 
     # WHEN we process any event
-    with ctx.manager(
-        "update-status",
-        state=State(
-            containers=[
-                Container(
+    with ctx(
+        ctx.on.update_status(),
+        state=testing.State(
+            containers={
+                testing.Container(
                     "nginx",
                     can_connect=True,
-                    mounts={"config": Mount(NGINX_CONFIG, test_config.name)},
+                    mounts={
+                        "config": testing.Mount(location=NGINX_CONFIG, source=test_config.name)
+                    },
                 )
-            ]
+            },
         ),
     ) as mgr:
         charm = mgr.charm

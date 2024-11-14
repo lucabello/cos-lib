@@ -1,11 +1,12 @@
+import dataclasses
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import httpx
+import ops
 import pytest
 import tenacity
 from lightkube import ApiError
-from ops import ActiveStatus, BlockedStatus, CharmBase, Framework, WaitingStatus
-from scenario import Container, Context, Relation, State
+from ops import testing
 
 from cosl.coordinated_workers.coordinator import ClusterRolesConfig, Coordinator
 from cosl.coordinated_workers.interface import ClusterProviderAppData, ClusterRequirerAppData
@@ -19,9 +20,8 @@ my_roles = ClusterRolesConfig(
 )
 
 
-class MyCoordCharm(CharmBase):
-
-    def __init__(self, framework: Framework):
+class MyCoordCharm(ops.CharmBase):
+    def __init__(self, framework: ops.Framework):
         super().__init__(framework)
 
         self.coordinator = Coordinator(
@@ -54,7 +54,7 @@ def coord_charm():
 
 @pytest.fixture
 def ctx(coord_charm):
-    return Context(
+    return testing.Context(
         coord_charm,
         meta={
             "name": "lilith",
@@ -80,7 +80,7 @@ def ctx(coord_charm):
 
 @pytest.fixture()
 def s3():
-    return Relation(
+    return testing.Relation(
         "s3",
         remote_app_data={
             "access-key": "key",
@@ -98,17 +98,24 @@ def worker():
     ClusterProviderAppData(worker_config="some: yaml").dump(app_data)
     remote_app_data = {}
     ClusterRequirerAppData(role="role").dump(remote_app_data)
-    return Relation("cluster", local_app_data=app_data, remote_app_data=remote_app_data)
+    return testing.Relation("cluster", local_app_data=app_data, remote_app_data=remote_app_data)
 
 
 @pytest.fixture()
 def base_state(s3, worker):
-
-    return State(
+    return testing.State(
         leader=True,
-        containers=[Container("nginx"), Container("nginx-prometheus-exporter")],
-        relations=[worker, s3],
+        containers={testing.Container("nginx"), testing.Container("nginx-prometheus-exporter")},
+        relations={worker, s3},
     )
+
+
+def set_containers(state, nginx_can_connect=False, exporter_can_connect=False):
+    containers = {
+        testing.Container("nginx", can_connect=nginx_can_connect),
+        testing.Container("nginx-prometheus-exporter", can_connect=exporter_can_connect),
+    }
+    return dataclasses.replace(state, containers=containers)
 
 
 @patch(
@@ -117,14 +124,14 @@ def base_state(s3, worker):
 )
 def test_status_check_no_workers(ctx, base_state, s3, caplog):
     # GIVEN the container cannot connect
-    state = base_state.with_can_connect("nginx", True)
-    state = state.replace(relations=[s3])
+    state = set_containers(base_state, True, False)
+    state = dataclasses.replace(state, relations={s3})
 
     # WHEN we run any event
-    state_out = ctx.run("config_changed", state)
+    state_out = ctx.run(ctx.on.config_changed(), state)
 
     # THEN the charm sets blocked
-    assert state_out.unit_status == BlockedStatus("[consistency] Missing any worker relation.")
+    assert state_out.unit_status == ops.BlockedStatus("[consistency] Missing any worker relation.")
 
 
 @patch(
@@ -133,29 +140,28 @@ def test_status_check_no_workers(ctx, base_state, s3, caplog):
 )
 def test_status_check_no_s3(ctx, base_state, worker, caplog):
     # GIVEN the container cannot connect
-    state = base_state.with_can_connect("nginx", True)
-    state = state.replace(relations=[worker])
+    state = set_containers(base_state, True, False)
+    state = dataclasses.replace(base_state, relations={worker})
 
     # WHEN we run any event
-    state_out = ctx.run("config_changed", state)
+    state_out = ctx.run(ctx.on.config_changed(), state)
 
     # THEN the charm sets blocked
-    assert state_out.unit_status == BlockedStatus("[s3] Missing S3 integration.")
+    assert state_out.unit_status == ops.BlockedStatus("[s3] Missing S3 integration.")
 
 
 @patch(
     "charms.observability_libs.v0.kubernetes_compute_resources_patch.KubernetesComputeResourcesPatch.get_status",
-    MagicMock(return_value=(BlockedStatus(""))),
+    MagicMock(return_value=(ops.BlockedStatus(""))),
 )
 def test_status_check_k8s_patch_failed(ctx, base_state, caplog):
     # GIVEN the container can connect
-    state = base_state.with_can_connect("nginx", True)
-    state = base_state.with_can_connect("nginx-prometheus-exporter", True)
+    state = set_containers(base_state, True, True)
 
     # WHEN we run any event
-    state_out = ctx.run("update_status", state)
+    state_out = ctx.run(ctx.on.update_status(), state)
 
-    assert state_out.unit_status == BlockedStatus("")
+    assert state_out.unit_status == ops.BlockedStatus("")
 
 
 @patch("charms.observability_libs.v0.kubernetes_compute_resources_patch.ResourcePatcher")
@@ -167,8 +173,7 @@ def test_status_check_k8s_patch_success_after_retries(
     resource_patcher_mock, ctx, base_state, caplog
 ):
     # GIVEN the container can connect
-    state = base_state.with_can_connect("nginx", True)
-    state = base_state.with_can_connect("nginx-prometheus-exporter", True)
+    state = set_containers(base_state, True, True)
 
     # Retry on that error
     response = httpx.Response(
@@ -180,14 +185,14 @@ def test_status_check_k8s_patch_success_after_retries(
     # on collect-unit-status, the request patches are not yet reflected
     with patch(
         "cosl.coordinated_workers.coordinator.KubernetesComputeResourcesPatch.get_status",
-        MagicMock(return_value=WaitingStatus("waiting")),
+        MagicMock(return_value=ops.WaitingStatus("waiting")),
     ):
-        state_intermediate = ctx.run("config_changed", state)
-    assert state_intermediate.unit_status == WaitingStatus("waiting")
+        state_intermediate = ctx.run(ctx.on.config_changed(), state)
+    assert state_intermediate.unit_status == ops.WaitingStatus("waiting")
 
     with patch(
         "cosl.coordinated_workers.coordinator.KubernetesComputeResourcesPatch.get_status",
-        MagicMock(return_value=ActiveStatus("")),
+        MagicMock(return_value=ops.ActiveStatus("")),
     ):
-        state_out = ctx.run("update_status", state_intermediate)
-    assert state_out.unit_status == ActiveStatus("Degraded.")
+        state_out = ctx.run(ctx.on.update_status(), state_intermediate)
+    assert state_out.unit_status == ops.ActiveStatus("Degraded.")

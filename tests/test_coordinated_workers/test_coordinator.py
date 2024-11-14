@@ -1,9 +1,9 @@
+import dataclasses
 import json
 
 import ops
 import pytest
-from ops import Framework
-from scenario import Container, Context, Relation, State
+from ops import testing
 
 from src.cosl.coordinated_workers.coordinator import (
     ClusterRolesConfig,
@@ -16,7 +16,7 @@ from src.cosl.coordinated_workers.interface import ClusterRequirerAppData
 @pytest.fixture
 def coordinator_state():
     requires_relations = {
-        endpoint: Relation(endpoint=endpoint, interface=interface["interface"])
+        endpoint: testing.Relation(endpoint=endpoint, interface=interface["interface"])
         for endpoint, interface in {
             "my-certificates": {"interface": "certificates"},
             "my-logging": {"interface": "loki_push_api"},
@@ -24,7 +24,7 @@ def coordinator_state():
             "my-workload-tracing": {"interface": "tracing"},
         }.items()
     }
-    requires_relations["my-s3"] = Relation(
+    requires_relations["my-s3"] = testing.Relation(
         "my-s3",
         interface="s3",
         remote_app_data={
@@ -34,35 +34,35 @@ def coordinator_state():
             "secret-key": "my-secret-key",
         },
     )
-    requires_relations["cluster_worker0"] = Relation(
+    requires_relations["cluster_worker0"] = testing.Relation(
         "my-cluster",
         remote_app_name="worker0",
         remote_app_data=ClusterRequirerAppData(role="read").dump(),
     )
-    requires_relations["cluster_worker1"] = Relation(
+    requires_relations["cluster_worker1"] = testing.Relation(
         "my-cluster",
         remote_app_name="worker1",
         remote_app_data=ClusterRequirerAppData(role="write").dump(),
     )
-    requires_relations["cluster_worker2"] = Relation(
+    requires_relations["cluster_worker2"] = testing.Relation(
         "my-cluster",
         remote_app_name="worker2",
         remote_app_data=ClusterRequirerAppData(role="backend").dump(),
     )
 
     provides_relations = {
-        endpoint: Relation(endpoint=endpoint, interface=interface["interface"])
+        endpoint: testing.Relation(endpoint=endpoint, interface=interface["interface"])
         for endpoint, interface in {
             "my-dashboards": {"interface": "grafana_dashboard"},
             "my-metrics": {"interface": "prometheus_scrape"},
         }.items()
     }
 
-    return State(
-        containers=[
-            Container("nginx", can_connect=True),
-            Container("nginx-prometheus-exporter", can_connect=True),
-        ],
+    return testing.State(
+        containers={
+            testing.Container("nginx", can_connect=True),
+            testing.Container("nginx-prometheus-exporter", can_connect=True),
+        },
         relations=list(requires_relations.values()) + list(provides_relations.values()),
     )
 
@@ -90,7 +90,7 @@ def coordinator_charm(request):
             },
         }
 
-        def __init__(self, framework: Framework):
+        def __init__(self, framework: ops.Framework):
             super().__init__(framework)
             # Note: Here it is a good idea not to use context mgr because it is "ops aware"
             self.coordinator = Coordinator(
@@ -133,48 +133,48 @@ def coordinator_charm(request):
 
 
 def test_worker_roles_subset_of_minimal_deployment(
-    coordinator_state: State, coordinator_charm: ops.CharmBase
+    coordinator_state: testing.State, coordinator_charm: ops.CharmBase
 ):
     # Test that the combination of worker roles is a subset of the minimal deployment roles
 
     # GIVEN a coordinator_charm
-    ctx = Context(coordinator_charm, meta=coordinator_charm.META)
+    ctx = testing.Context(coordinator_charm, meta=coordinator_charm.META)
 
     # AND a coordinator_state defining relations to worker charms with incomplete distributed roles
-    missing_backend_worker_relation = [
+    missing_backend_worker_relation = {
         relation
         for relation in coordinator_state.relations
         if relation.remote_app_name != "worker2"
-    ]
+    }
 
     # WHEN we process any event
-    with ctx.manager(
-        "update-status",
-        state=coordinator_state.replace(relations=missing_backend_worker_relation),
+    with ctx(
+        ctx.on.update_status(),
+        state=dataclasses.replace(coordinator_state, relations=missing_backend_worker_relation),
     ) as mgr:
         charm: coordinator_charm = mgr.charm
 
-        # THEN the deployment is coherent
+        # THEN the deployment is not coherent
         assert not charm.coordinator.is_coherent
 
 
 def test_without_s3_integration_raises_error(
-    coordinator_state: State, coordinator_charm: ops.CharmBase
+    coordinator_state: testing.State, coordinator_charm: ops.CharmBase
 ):
     # Test that a charm without an s3 integration raises S3NotFoundError
 
     # GIVEN a coordinator charm without an s3 integration
-    ctx = Context(coordinator_charm, meta=coordinator_charm.META)
-    relations_without_s3 = [
+    ctx = testing.Context(coordinator_charm, meta=coordinator_charm.META)
+    relations_without_s3 = {
         relation for relation in coordinator_state.relations if relation.endpoint != "my-s3"
-    ]
+    }
 
     # WHEN we process any event
-    with ctx.manager(
-        "update-status",
-        state=coordinator_state.replace(relations=relations_without_s3),
+    with ctx(
+        ctx.on.update_status(),
+        state=dataclasses.replace(coordinator_state, relations=relations_without_s3),
     ) as mgr:
-        # THEN the _s3_config method raises and S3NotFoundError
+        # THEN the _s3_config method raises an S3NotFoundError
         with pytest.raises(S3NotFoundError):
             mgr.charm.coordinator._s3_config
 
@@ -193,7 +193,7 @@ def test_without_s3_integration_raises_error(
     ),
 )
 def test_s3_integration(
-    coordinator_state: State,
+    coordinator_state: testing.State,
     coordinator_charm: ops.CharmBase,
     region,
     endpoint,
@@ -206,7 +206,7 @@ def test_s3_integration(
     # Test that a charm with a s3 integration gives the expected _s3_config
 
     # GIVEN a coordinator charm with a s3 integration
-    ctx = Context(coordinator_charm, meta=coordinator_charm.META)
+    ctx = testing.Context(coordinator_charm, meta=coordinator_charm.META)
     s3_relation = coordinator_state.get_relations("my-s3")[0]
     relations_except_s3 = [
         relation for relation in coordinator_state.relations if relation.endpoint != "my-s3"
@@ -224,13 +224,14 @@ def test_s3_integration(
     }
 
     # WHEN we process any event
-    with ctx.manager(
-        "update-status",
-        state=coordinator_state.replace(
-            relations=relations_except_s3 + [s3_relation.replace(remote_app_data=s3_app_data)]
+    with ctx(
+        ctx.on.update_status(),
+        state=dataclasses.replace(
+            coordinator_state,
+            relations=relations_except_s3
+            + [dataclasses.replace(s3_relation, remote_app_data=s3_app_data)],
         ),
     ) as mgr:
-
         # THEN the s3_connection_info method returns the expected data structure
         coordinator: Coordinator = mgr.charm.coordinator
         assert coordinator.s3_connection_info.region == region

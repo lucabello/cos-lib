@@ -1,12 +1,12 @@
+import dataclasses
 from contextlib import ExitStack, contextmanager
 from functools import partial
 from unittest.mock import MagicMock, patch
 
+import ops
 import pytest
 import tenacity
-from ops import ActiveStatus, CharmBase, Framework, WaitingStatus
-from ops.pebble import Layer
-from scenario import Container, Context, ExecOutput, Relation, State
+from ops import testing
 
 from cosl.coordinated_workers.interface import ClusterProviderAppData
 from cosl.coordinated_workers.worker import Worker, WorkerError
@@ -28,7 +28,7 @@ def _urlopen_patch(url: str, resp: str, tls: bool):
 
 
 @contextmanager
-def k8s_patch(status=ActiveStatus(), is_ready=True):
+def k8s_patch(status=ops.ActiveStatus(), is_ready=True):
     with patch("lightkube.core.client.GenericSyncClient"):
         with patch.multiple(
             "cosl.coordinated_workers.worker.KubernetesComputeResourcesPatch",
@@ -60,13 +60,13 @@ def patch_status_wait():
 
 @pytest.fixture
 def ctx(tls):
-    class MyCharm(CharmBase):
-        def __init__(self, framework: Framework):
+    class MyCharm(ops.CharmBase):
+        def __init__(self, framework: ops.Framework):
             super().__init__(framework)
             self.worker = Worker(
                 self,
                 "workload",
-                lambda _: Layer(
+                lambda _: ops.pebble.Layer(
                     {
                         "summary": "summary",
                         "services": {"service": {"summary": "summary", "override": "replace"}},
@@ -81,7 +81,7 @@ def ctx(tls):
         def _readiness_check_endpoint(self, _):
             return f"{'https' if tls else 'http'}://localhost:3200/ready"
 
-    return Context(
+    return testing.Context(
         MyCharm,
         meta={
             "name": "lilith",
@@ -102,12 +102,16 @@ def ctx(tls):
 def base_state(request):
     app_data = {}
     ClusterProviderAppData(worker_config="some: yaml").dump(app_data)
-    return State(
+    return testing.State(
         leader=request.param,
-        containers=[
-            Container("workload", exec_mock={("update-ca-certificates", "--fresh"): ExecOutput()})
-        ],
-        relations=[Relation("cluster", remote_app_data=app_data)],
+        containers={
+            testing.Container(
+                "workload",
+                can_connect=True,
+                execs={testing.Exec(("update-ca-certificates", "--fresh"))},
+            )
+        },
+        relations={testing.Relation("cluster", remote_app_data=app_data)},
     )
 
 
@@ -137,29 +141,32 @@ def config_on_disk():
 @k8s_patch()
 def test_status_check_no_pebble(ctx, base_state, caplog):
     # GIVEN the container cannot connect
-    state = base_state.with_can_connect("workload", False)
+    state = dataclasses.replace(
+        base_state, containers={testing.Container("workload", can_connect=False)}
+    )
 
     # WHEN we run any event
-    state_out = ctx.run("update_status", state)
+    state_out = ctx.run(ctx.on.update_status(), state)
 
     # THEN the charm sets blocked
-    assert state_out.unit_status == WaitingStatus("Waiting for `workload` container")
+    assert state_out.unit_status == ops.WaitingStatus("Waiting for `workload` container")
     # AND THEN the charm logs that the container isn't ready.
     assert "container cannot connect, skipping update_config." in caplog.messages
 
 
 @k8s_patch()
 def test_status_check_no_config(ctx, base_state, caplog):
-    state = base_state.with_can_connect("workload", True)
     # GIVEN there is no config file on disk
     # WHEN we run any event
     with patch(
         "cosl.coordinated_workers.worker.Worker._running_worker_config", new=lambda _: None
     ):
-        state_out = ctx.run("update_status", state)
+        state_out = ctx.run(ctx.on.update_status(), base_state)
 
     # THEN the charm sets blocked
-    assert state_out.unit_status == WaitingStatus("Waiting for coordinator to publish a config")
+    assert state_out.unit_status == ops.WaitingStatus(
+        "Waiting for coordinator to publish a config"
+    )
     # AND THEN the charm logs that the config isn't on disk
     assert "Config file not on disk. Skipping status check." in caplog.messages
 
@@ -170,12 +177,12 @@ def test_status_check_starting(ctx, base_state, tls):
     with endpoint_starting(tls):
         # AND GIVEN that the config is on disk
         with config_on_disk():
-            # AND GIVEN that the container can connect
-            state = base_state.with_can_connect("workload", True)
+            # AND GIVEN that the container can connect (default in base_state)
+            state = base_state
             # WHEN we run any event
-            state_out = ctx.run("update_status", state)
+            state_out = ctx.run(ctx.on.update_status(), state)
     # THEN the charm sets waiting: Starting...
-    assert state_out.unit_status == WaitingStatus("Starting...")
+    assert state_out.unit_status == ops.WaitingStatus("Starting...")
 
 
 @k8s_patch()
@@ -185,26 +192,26 @@ def test_status_check_ready(ctx, base_state, tls):
         # AND GIVEN that the config is on disk
         with config_on_disk():
             # AND GIVEN that the container can connect
-            state = base_state.with_can_connect("workload", True)
+            state = base_state
             # WHEN we run any event
-            state_out = ctx.run("update_status", state)
+            state_out = ctx.run(ctx.on.update_status(), state)
     # THEN the charm sets waiting: Starting...
-    assert state_out.unit_status == ActiveStatus("read,write ready.")
+    assert state_out.unit_status == ops.ActiveStatus("read,write ready.")
 
 
 def test_status_no_endpoint(ctx, base_state, caplog):
     # GIVEN a charm doesn't pass an endpoint to Worker
-    class MyCharm(CharmBase):
-        def __init__(self, framework: Framework):
+    class MyCharm(ops.CharmBase):
+        def __init__(self, framework: ops.Framework):
             super().__init__(framework)
             self.worker = Worker(
                 self,
                 "workload",
-                lambda _: Layer({"services": {"foo": {"command": "foo"}}}),
+                lambda _: ops.pebble.Layer({"services": {"foo": {"command": "foo"}}}),
                 {"cluster": "cluster"},
             )
 
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "damian",
@@ -220,11 +227,11 @@ def test_status_no_endpoint(ctx, base_state, caplog):
         },
     )
     # AND GIVEN that the container can connect
-    state = base_state.with_can_connect("workload", True)
+    state = base_state
     # WHEN we run any event
-    state_out = ctx.run("update_status", state)
+    state_out = ctx.run(ctx.on.update_status(), state)
     # THEN the charm sets Active: ready, even though we have no idea whether the endpoint is ready.
-    assert state_out.unit_status == ActiveStatus("read,write ready.")
+    assert state_out.unit_status == ops.ActiveStatus("read,write ready.")
 
 
 def test_access_readiness_no_endpoint_raises():
@@ -235,7 +242,7 @@ def test_access_readiness_no_endpoint_raises():
             worker = Worker(
                 caller,
                 "workload",
-                lambda _: Layer({"services": {"foo": {"command": "foo"}}}),
+                lambda _: ops.pebble.Layer({"services": {"foo": {"command": "foo"}}}),
                 {"cluster": "cluster"},
             )
 
@@ -247,10 +254,9 @@ def test_access_readiness_no_endpoint_raises():
 def test_status_check_ready_with_patch(ctx, base_state, tls):
     with endpoint_ready(tls):
         with config_on_disk():
-            with k8s_patch(status=WaitingStatus("waiting")):
-                state = base_state.with_can_connect("workload", True)
-                state_out = ctx.run("config_changed", state)
-                assert state_out.unit_status == WaitingStatus("waiting")
-                with k8s_patch(status=ActiveStatus("")):
-                    state_out_out = ctx.run("update_status", state_out)
-                    assert state_out_out.unit_status == ActiveStatus("read,write ready.")
+            with k8s_patch(status=ops.WaitingStatus("waiting")):
+                state_out = ctx.run(ctx.on.config_changed(), base_state)
+                assert state_out.unit_status == ops.WaitingStatus("waiting")
+                with k8s_patch(status=ops.ActiveStatus("")):
+                    state_out_out = ctx.run(ctx.on.update_status(), state_out)
+                    assert state_out_out.unit_status == ops.ActiveStatus("read,write ready.")

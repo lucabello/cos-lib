@@ -6,10 +6,7 @@ from unittest.mock import MagicMock, patch
 import ops
 import pytest
 import yaml
-from ops import Framework
-from ops.pebble import Layer, ServiceStatus
-from scenario import Container, Context, ExecOutput, Mount, Relation, Secret, State
-from scenario.runtime import UncaughtCharmError
+from ops import testing
 
 from cosl.coordinated_workers.worker import (
     CERT_FILE,
@@ -23,9 +20,9 @@ from tests.test_coordinated_workers.test_worker_status import k8s_patch
 
 
 class MyCharm(ops.CharmBase):
-    layer = Layer("")
+    layer = ops.pebble.Layer("")
 
-    def __init__(self, framework: Framework):
+    def __init__(self, framework: ops.Framework):
         super().__init__(framework)
         self.worker = Worker(
             self,
@@ -41,7 +38,7 @@ def test_no_roles_error():
     # raises a WorkerError
 
     # WHEN you define a charm with no role-x config options
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -53,8 +50,8 @@ def test_no_roles_error():
 
     # IF the charm executes any event
     # THEN the charm raises an error
-    with pytest.raises(UncaughtCharmError):
-        ctx.run("update-status", State(containers=[Container("foo")]))
+    with pytest.raises(testing.errors.UncaughtCharmError):
+        ctx.run(ctx.on.update_status(), testing.State(containers={testing.Container("foo")}))
 
 
 @pytest.mark.parametrize(
@@ -75,7 +72,7 @@ def test_roles_from_config(roles_active, roles_inactive, expected):
     # correctly determines which ones are enabled through the Worker
 
     # WHEN you define a charm with a few role-x config options
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -91,10 +88,10 @@ def test_roles_from_config(roles_active, roles_inactive, expected):
     )
 
     # AND the charm runs with a few of those set to true, the rest to false
-    with ctx.manager(
-        "update-status",
-        State(
-            containers=[Container("foo")],
+    with ctx(
+        ctx.on.update_status(),
+        testing.State(
+            containers={testing.Container("foo")},
             config={
                 **{f"role-{r}": False for r in roles_inactive},
                 **{f"role-{r}": True for r in roles_active},
@@ -107,7 +104,7 @@ def test_roles_from_config(roles_active, roles_inactive, expected):
 
 def test_worker_restarts_if_some_service_not_up(tmp_path):
     # GIVEN a worker with some services
-    MyCharm.layer = Layer(
+    MyCharm.layer = ops.pebble.Layer(
         {
             "services": {
                 "foo": {
@@ -132,7 +129,7 @@ def test_worker_restarts_if_some_service_not_up(tmp_path):
             }
         }
     )
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -145,33 +142,33 @@ def test_worker_restarts_if_some_service_not_up(tmp_path):
     #  but some of the services are down
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text("some: yaml")
-    container = Container(
+    container = testing.Container(
         "foo",
         can_connect=True,
-        mounts={"local": Mount(CONFIG_FILE, cfg)},
-        exec_mock={
-            ("update-ca-certificates", "--fresh"): ExecOutput(),
-            ("/bin/foo", "-version"): ExecOutput(stdout="foo"),
+        mounts={"local": testing.Mount(location=CONFIG_FILE, source=cfg)},
+        execs={
+            testing.Exec(("update-ca-certificates", "--fresh")),
+            testing.Exec(("/bin/foo", "-version"), stdout="foo"),
         },
-        service_status={
-            "foo": ServiceStatus.INACTIVE,
-            "bar": ServiceStatus.ACTIVE,
-            "baz": ServiceStatus.INACTIVE,
+        service_statuses={
+            "foo": ops.pebble.ServiceStatus.INACTIVE,
+            "bar": ops.pebble.ServiceStatus.ACTIVE,
+            "baz": ops.pebble.ServiceStatus.INACTIVE,
         },
     )
-    state_out = ctx.run(container.pebble_ready_event, State(containers=[container]))
+    state_out = ctx.run(ctx.on.pebble_ready(container), testing.State(containers={container}))
 
     # THEN the charm restarts all the services that are down
     container_out = state_out.get_container("foo")
-    service_statuses = container_out.service_status.values()
-    assert all(svc is ServiceStatus.ACTIVE for svc in service_statuses), [
+    service_statuses = container_out.service_statuses.values()
+    assert all(svc is ops.pebble.ServiceStatus.ACTIVE for svc in service_statuses), [
         stat.value for stat in service_statuses
     ]
 
 
 def test_worker_does_not_restart_external_services(tmp_path):
     # GIVEN a worker with some services and a layer with some other services
-    MyCharm.layer = Layer(
+    MyCharm.layer = ops.pebble.Layer(
         {
             "services": {
                 "foo": {
@@ -184,7 +181,7 @@ def test_worker_does_not_restart_external_services(tmp_path):
             }
         }
     )
-    other_layer = Layer(
+    other_layer = ops.pebble.Layer(
         {
             "services": {
                 "bar": {
@@ -203,7 +200,7 @@ def test_worker_does_not_restart_external_services(tmp_path):
         }
     )
 
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -216,39 +213,39 @@ def test_worker_does_not_restart_external_services(tmp_path):
     #  but some of the services are down
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text("some: yaml")
-    container = Container(
+    container = testing.Container(
         "foo",
-        exec_mock={
-            ("update-ca-certificates", "--fresh"): ExecOutput(),
-            ("/bin/foo", "-version"): ExecOutput(stdout="foo"),
+        execs={
+            testing.Exec(("update-ca-certificates", "--fresh")),
+            testing.Exec(("/bin/foo", "-version"), stdout="foo"),
         },
         can_connect=True,
-        mounts={"local": Mount(CONFIG_FILE, cfg)},
+        mounts={"local": testing.Mount(location=CONFIG_FILE, source=cfg)},
         layers={"foo": MyCharm.layer, "bar": other_layer},
-        service_status={
+        service_statuses={
             # layer foo has some inactive
-            "foo": ServiceStatus.INACTIVE,
+            "foo": ops.pebble.ServiceStatus.INACTIVE,
             # layer bar has some inactive
-            "bar": ServiceStatus.ACTIVE,
-            "baz": ServiceStatus.INACTIVE,
+            "bar": ops.pebble.ServiceStatus.ACTIVE,
+            "baz": ops.pebble.ServiceStatus.INACTIVE,
         },
     )
-    state_out = ctx.run(container.pebble_ready_event, State(containers=[container]))
+    state_out = ctx.run(ctx.on.pebble_ready(container), testing.State(containers={container}))
 
     # THEN the charm restarts all the services that are down
     container_out = state_out.get_container("foo")
-    assert container_out.service_status == {
+    assert container_out.service_statuses == {
         # layer foo service is now active
-        "foo": ServiceStatus.ACTIVE,
+        "foo": ops.pebble.ServiceStatus.ACTIVE,
         # layer bar services is unchanged
-        "bar": ServiceStatus.ACTIVE,
-        "baz": ServiceStatus.INACTIVE,
+        "bar": ops.pebble.ServiceStatus.ACTIVE,
+        "baz": ops.pebble.ServiceStatus.INACTIVE,
     }
 
 
 def test_worker_raises_if_service_restart_fails_for_too_long(tmp_path):
     # GIVEN a worker with some services
-    MyCharm.layer = Layer(
+    MyCharm.layer = ops.pebble.Layer(
         {
             "services": {
                 "foo": {
@@ -260,7 +257,7 @@ def test_worker_raises_if_service_restart_fails_for_too_long(tmp_path):
             }
         }
     )
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -271,12 +268,12 @@ def test_worker_raises_if_service_restart_fails_for_too_long(tmp_path):
     )
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text("some: yaml")
-    container = Container(
+    container = testing.Container(
         "foo",
         can_connect=True,
-        mounts={"local": Mount(CONFIG_FILE, cfg)},
-        service_status={
-            "foo": ServiceStatus.INACTIVE,
+        mounts={"local": testing.Mount(location=CONFIG_FILE, source=cfg)},
+        service_statuses={
+            "foo": ops.pebble.ServiceStatus.INACTIVE,
         },
     )
 
@@ -290,7 +287,7 @@ def test_worker_raises_if_service_restart_fails_for_too_long(tmp_path):
         # THEN the charm errors out
         # technically an ops.pebble.ChangeError but the context manager doesn't catch it for some reason
         stack.enter_context(pytest.raises(Exception))
-        ctx.run(container.pebble_ready_event, State(containers=[container]))
+        ctx.run(ctx.on.pebble_ready(container), testing.State(containers={container}))
 
 
 @pytest.mark.parametrize(
@@ -316,7 +313,7 @@ def test_worker_raises_if_service_restart_fails_for_too_long(tmp_path):
     ),
 )
 def test_get_remote_write_endpoints(remote_databag, expected):
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -325,17 +322,18 @@ def test_get_remote_write_endpoints(remote_databag, expected):
         },
         config={"options": {"role-all": {"type": "boolean", "default": True}}},
     )
-    container = Container(
+    container = testing.Container(
         "foo",
-        exec_mock={("update-ca-certificates", "--fresh"): ExecOutput()},
+        execs={testing.Exec(("update-ca-certificates", "--fresh"))},
         can_connect=True,
     )
-    relation = Relation(
+    relation = testing.Relation(
         "cluster",
         remote_app_data=remote_databag,
     )
-    with ctx.manager(
-        relation.changed_event, State(containers=[container], relations=[relation])
+    with ctx(
+        ctx.on.relation_changed(relation),
+        testing.State(containers={container}, relations={relation}),
     ) as mgr:
         charm = mgr.charm
         mgr.run()
@@ -347,7 +345,6 @@ def test_config_preprocessor():
     new_config = {"modified": "config"}
 
     class MyWorker(Worker):
-
         @property
         def _worker_config(self):
             # mock config processor that entirely replaces the config with another,
@@ -355,9 +352,9 @@ def test_config_preprocessor():
             return new_config
 
     class MyCharm(ops.CharmBase):
-        layer = Layer({"services": {"foo": {"command": ["bar"]}}})
+        layer = ops.pebble.Layer({"services": {"foo": {"command": ["bar"]}}})
 
-        def __init__(self, framework: Framework):
+        def __init__(self, framework: ops.Framework):
             super().__init__(framework)
             self.worker = MyWorker(
                 self,
@@ -366,7 +363,7 @@ def test_config_preprocessor():
                 {"cluster": "cluster"},
             )
 
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -383,24 +380,24 @@ def test_config_preprocessor():
 
     # WHEN the charm writes the config to disk
     state_out = ctx.run(
-        "config_changed",
-        State(
+        ctx.on.config_changed(),
+        testing.State(
             config={"role-all": True},
-            containers=[
-                Container(
+            containers={
+                testing.Container(
                     "foo",
                     can_connect=True,
-                    exec_mock={("update-ca-certificates", "--fresh"): ExecOutput()},
+                    execs={testing.Exec(("update-ca-certificates", "--fresh"))},
                 )
-            ],
-            relations=[
-                Relation(
+            },
+            relations={
+                testing.Relation(
                     "cluster",
                     remote_app_data={
                         "worker_config": json.dumps(yaml.safe_dump({"original": "config"}))
                     },
                 )
-            ],
+            },
         ),
     )
 
@@ -413,8 +410,7 @@ def test_config_preprocessor():
 @patch.object(Worker, "_set_pebble_layer", MagicMock(return_value=False))
 @patch.object(Worker, "restart")
 def test_worker_does_not_restart(restart_mock, tmp_path):
-
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -423,7 +419,7 @@ def test_worker_does_not_restart(restart_mock, tmp_path):
         },
         config={"options": {"role-all": {"type": "boolean", "default": True}}},
     )
-    relation = Relation(
+    relation = testing.Relation(
         "cluster",
         remote_app_data={
             "worker_config": json.dumps("some: yaml"),
@@ -431,11 +427,11 @@ def test_worker_does_not_restart(restart_mock, tmp_path):
     )
     # WHEN the charm receives any event and there are no changes to the config or the layer,
     #  but some of the services are down
-    container = Container(
+    container = testing.Container(
         "foo",
         can_connect=True,
     )
-    ctx.run("update_status", State(containers=[container], relations=[relation]))
+    ctx.run(ctx.on.update_status(), testing.State(containers={container}, relations={relation}))
 
     assert not restart_mock.called
 
@@ -444,8 +440,7 @@ def test_worker_does_not_restart(restart_mock, tmp_path):
 @patch.object(Worker, "_set_pebble_layer", MagicMock(return_value=False))
 @patch.object(Worker, "restart")
 def test_worker_does_not_restart_on_no_cert_changed(restart_mock, tmp_path):
-
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -454,13 +449,18 @@ def test_worker_does_not_restart_on_no_cert_changed(restart_mock, tmp_path):
         },
         config={"options": {"role-all": {"type": "boolean", "default": True}}},
     )
-    relation = Relation(
+    secret = testing.Secret(
+        {"private-key": "private"},
+        label="private_id",
+        owner="app",
+    )
+    relation = testing.Relation(
         "cluster",
         remote_app_data={
             "worker_config": json.dumps("some: yaml"),
             "ca_cert": json.dumps("ca"),
             "server_cert": json.dumps("cert"),
-            "privkey_secret_id": json.dumps("private_id"),
+            "privkey_secret_id": json.dumps(secret.id),
             "s3_tls_ca_chain": json.dumps("s3_ca"),
         },
     )
@@ -476,28 +476,22 @@ def test_worker_does_not_restart_on_no_cert_changed(restart_mock, tmp_path):
     client_ca.write_text("ca")
     s3_ca_chain.write_text("s3_ca")
 
-    container = Container(
+    container = testing.Container(
         "foo",
         can_connect=True,
-        exec_mock={("update-ca-certificates", "--fresh"): ExecOutput()},
+        execs={testing.Exec(("update-ca-certificates", "--fresh"))},
         mounts={
-            "cert": Mount(CERT_FILE, cert),
-            "key": Mount(KEY_FILE, key),
-            "client_ca": Mount(CLIENT_CA_FILE, client_ca),
-            "s3_ca_chain": Mount(S3_TLS_CA_CHAIN_FILE, s3_ca_chain),
-            "root_ca": Mount(root_ca_mocked_path, client_ca),
+            "cert": testing.Mount(location=CERT_FILE, source=cert),
+            "key": testing.Mount(location=KEY_FILE, source=key),
+            "client_ca": testing.Mount(location=CLIENT_CA_FILE, source=client_ca),
+            "s3_ca_chain": testing.Mount(location=S3_TLS_CA_CHAIN_FILE, source=s3_ca_chain),
+            "root_ca": testing.Mount(location=root_ca_mocked_path, source=client_ca),
         },
     )
 
-    secret = Secret(
-        "secret:private_id",
-        label="private_id",
-        owner="app",
-        contents={0: {"private-key": "private"}},
-    )
     ctx.run(
-        "update_status",
-        State(leader=True, containers=[container], relations=[relation], secrets=[secret]),
+        ctx.on.update_status(),
+        testing.State(leader=True, containers={container}, relations={relation}, secrets={secret}),
     )
 
     assert restart_mock.call_count == 0
@@ -507,9 +501,9 @@ def test_worker_does_not_restart_on_no_cert_changed(restart_mock, tmp_path):
 @patch.object(Worker, "_update_config")
 def test_worker_no_reconcile_when_patch_not_ready(_update_config_mock):
     class MyCharmWithResources(ops.CharmBase):
-        layer = Layer("")
+        layer = ops.pebble.Layer("")
 
-        def __init__(self, framework: Framework):
+        def __init__(self, framework: ops.Framework):
             super().__init__(framework)
             self.worker = Worker(
                 self,
@@ -521,7 +515,7 @@ def test_worker_no_reconcile_when_patch_not_ready(_update_config_mock):
                 container_name="charm",
             )
 
-    ctx = Context(
+    ctx = testing.Context(
         MyCharmWithResources,
         meta={
             "name": "foo",
@@ -532,8 +526,8 @@ def test_worker_no_reconcile_when_patch_not_ready(_update_config_mock):
     )
 
     ctx.run(
-        "update_status",
-        State(leader=True, containers=[Container("foo")]),
+        ctx.on.update_status(),
+        testing.State(leader=True, containers={testing.Container("foo")}),
     )
 
     assert not _update_config_mock.called
@@ -544,7 +538,7 @@ def test_worker_no_reconcile_when_patch_not_ready(_update_config_mock):
 @patch.object(Worker, "restart")
 def test_worker_certs_update(restart_mock, tmp_path):
     # GIVEN a worker with no cert files on disk, and a cluster relation giving us some cert data
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -553,13 +547,18 @@ def test_worker_certs_update(restart_mock, tmp_path):
         },
         config={"options": {"role-all": {"type": "boolean", "default": True}}},
     )
-    relation = Relation(
+    secret = testing.Secret(
+        {"private-key": "private"},
+        label="private_id",
+        owner="app",
+    )
+    relation = testing.Relation(
         "cluster",
         remote_app_data={
             "worker_config": json.dumps("some: yaml"),
             "ca_cert": json.dumps("ca"),
             "server_cert": json.dumps("cert"),
-            "privkey_secret_id": json.dumps("private_id"),
+            "privkey_secret_id": json.dumps(secret.id),
             "s3_tls_ca_chain": json.dumps("s3_ca"),
         },
     )
@@ -569,28 +568,22 @@ def test_worker_certs_update(restart_mock, tmp_path):
     client_ca = tmp_path / "client_ca.cert"
     s3_ca_chain = tmp_path / "s3_ca_chain.cert"
 
-    container = Container(
+    container = testing.Container(
         "foo",
         can_connect=True,
-        exec_mock={("update-ca-certificates", "--fresh"): ExecOutput()},
+        execs={testing.Exec(("update-ca-certificates", "--fresh"))},
         mounts={
-            "cert": Mount(CERT_FILE, cert),
-            "key": Mount(KEY_FILE, key),
-            "client_ca": Mount(CLIENT_CA_FILE, client_ca),
-            "s3_ca_chain": Mount(S3_TLS_CA_CHAIN_FILE, s3_ca_chain),
+            "cert": testing.Mount(location=CERT_FILE, source=cert),
+            "key": testing.Mount(location=KEY_FILE, source=key),
+            "client_ca": testing.Mount(location=CLIENT_CA_FILE, source=client_ca),
+            "s3_ca_chain": testing.Mount(location=S3_TLS_CA_CHAIN_FILE, source=s3_ca_chain),
         },
     )
 
-    secret = Secret(
-        "secret:private_id",
-        label="private_id",
-        owner="app",
-        contents={0: {"private-key": "private"}},
-    )
     # WHEN the charm receives any event
     ctx.run(
-        "update_status",
-        State(leader=True, containers=[container], relations=[relation], secrets=[secret]),
+        ctx.on.update_status(),
+        testing.State(leader=True, containers={container}, relations={relation}, secrets={secret}),
     )
 
     # THEN the worker writes all tls data to the right locations on the container filesystem
@@ -609,7 +602,7 @@ def test_worker_certs_update(restart_mock, tmp_path):
 @pytest.mark.parametrize("s3_ca_on_disk", (True, False))
 def test_worker_certs_update_only_s3(restart_mock, tmp_path, s3_ca_on_disk):
     # GIVEN a worker with a tls-encrypted s3 bucket
-    ctx = Context(
+    ctx = testing.Context(
         MyCharm,
         meta={
             "name": "foo",
@@ -618,7 +611,7 @@ def test_worker_certs_update_only_s3(restart_mock, tmp_path, s3_ca_on_disk):
         },
         config={"options": {"role-all": {"type": "boolean", "default": True}}},
     )
-    relation = Relation(
+    relation = testing.Relation(
         "cluster",
         remote_app_data={
             "worker_config": json.dumps("some: yaml"),
@@ -633,22 +626,22 @@ def test_worker_certs_update_only_s3(restart_mock, tmp_path, s3_ca_on_disk):
     if s3_ca_on_disk:
         s3_ca_chain.write_text("s3_ca")
 
-    container = Container(
+    container = testing.Container(
         "foo",
         can_connect=True,
-        exec_mock={("update-ca-certificates", "--fresh"): ExecOutput()},
+        execs={testing.Exec(("update-ca-certificates", "--fresh"))},
         mounts={
-            "cert": Mount(CERT_FILE, cert),
-            "key": Mount(KEY_FILE, key),
-            "client_ca": Mount(CLIENT_CA_FILE, client_ca),
-            "s3_ca_chain": Mount(S3_TLS_CA_CHAIN_FILE, s3_ca_chain),
+            "cert": testing.Mount(location=CERT_FILE, source=cert),
+            "key": testing.Mount(location=KEY_FILE, source=key),
+            "client_ca": testing.Mount(location=CLIENT_CA_FILE, source=client_ca),
+            "s3_ca_chain": testing.Mount(location=S3_TLS_CA_CHAIN_FILE, source=s3_ca_chain),
         },
     )
 
     # WHEN the charm receives any event
     ctx.run(
-        "update_status",
-        State(leader=True, containers=[container], relations=[relation]),
+        ctx.on.update_status(),
+        testing.State(leader=True, containers={container}, relations={relation}),
     )
 
     # THEN the worker writes all tls data to the right locations on the container filesystem

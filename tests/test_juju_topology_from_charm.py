@@ -4,19 +4,17 @@ import unittest
 from collections import OrderedDict
 
 import ops
-from ops.charm import CharmBase
 from ops.testing import Harness
 
 from cosl.juju_topology import JujuTopology
 
 
-class JujuTopologyCharm(CharmBase):
+class JujuTopologyCharm(ops.CharmBase):
     pass
 
 
 class TestJujuTopology(unittest.TestCase):
     def setUp(self):
-        ops.testing.SIMULATE_CAN_CONNECT = True  # type: ignore
         self.input = OrderedDict(
             [
                 ("model", "some-model"),
