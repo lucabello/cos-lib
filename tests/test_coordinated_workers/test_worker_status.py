@@ -153,8 +153,6 @@ def test_status_check_no_pebble(ctx, base_state, caplog):
 
     # THEN the charm sets blocked
     assert state_out.unit_status == ops.WaitingStatus("Waiting for `workload` container")
-    # AND THEN the charm logs that the container isn't ready.
-    assert "container cannot connect, skipping update_config." in caplog.messages
 
 
 @k8s_patch()

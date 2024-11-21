@@ -102,6 +102,7 @@ def test_roles_from_config(roles_active, roles_inactive, expected):
         assert set(mgr.charm.worker.roles) == set(expected)
 
 
+@patch.object(Worker, "is_ready", new=lambda _: True)
 def test_worker_restarts_if_some_service_not_up(tmp_path):
     # GIVEN a worker with some services
     MyCharm.layer = ops.pebble.Layer(
@@ -166,6 +167,7 @@ def test_worker_restarts_if_some_service_not_up(tmp_path):
     ]
 
 
+@patch.object(Worker, "is_ready", new=lambda _: True)
 def test_worker_does_not_restart_external_services(tmp_path):
     # GIVEN a worker with some services and a layer with some other services
     MyCharm.layer = ops.pebble.Layer(
@@ -652,3 +654,123 @@ def test_worker_certs_update_only_s3(restart_mock, tmp_path, s3_ca_on_disk):
 
     # AND the worker restarts the workload IF it was not on disk already
     assert restart_mock.call_count == (0 if s3_ca_on_disk else 1)
+
+
+@patch.object(Worker, "restart")
+@patch.object(Worker, "stop")
+@pytest.mark.parametrize("tls", (True, False))
+def test_stop_called_on_no_cluster(stop_mock, restart_mock, tmp_path, tls):
+    # GIVEN a worker who's all happy to begin with
+    ctx = testing.Context(
+        MyCharm,
+        meta={
+            "name": "foo",
+            "requires": {"cluster": {"interface": "cluster"}},
+            "containers": {"foo": {"type": "oci-image"}},
+        },
+        config={"options": {"role-all": {"type": "boolean", "default": True}}},
+    )
+    cert = tmp_path / "cert.cert"
+    key = tmp_path / "key.key"
+    client_ca = tmp_path / "client_ca.cert"
+    s3_ca_chain = tmp_path / "s3_ca_chain.cert"
+
+    if tls:
+        s3_ca_chain.write_text("something_tls")
+        cert.write_text("something_tls")
+        key.write_text("something_tls")
+        client_ca.write_text("something_tls")
+
+    container = testing.Container(
+        "foo",
+        can_connect=True,
+        execs={testing.Exec(("update-ca-certificates", "--fresh"))},
+        mounts={
+            "cert": testing.Mount(location=CERT_FILE, source=cert),
+            "key": testing.Mount(location=KEY_FILE, source=key),
+            "client_ca": testing.Mount(location=CLIENT_CA_FILE, source=client_ca),
+            "s3_ca_chain": testing.Mount(location=S3_TLS_CA_CHAIN_FILE, source=s3_ca_chain),
+        },
+    )
+
+    # WHEN the charm receives any event
+    ctx.run(
+        ctx.on.update_status(),
+        testing.State(leader=True, containers={container}),
+    )
+
+    fs = container.get_filesystem(ctx)
+    # THEN the worker wipes all certificates if they are there
+    assert not fs.joinpath(CERT_FILE).exists()
+    assert not fs.joinpath(KEY_FILE).exists()
+    assert not fs.joinpath(CLIENT_CA_FILE).exists()
+    assert not fs.joinpath(S3_TLS_CA_CHAIN_FILE).exists()
+
+    # AND the worker stops the workload instead of restarting it
+    assert not restart_mock.called
+    assert stop_mock.called
+
+
+@patch.object(Worker, "is_ready", new=lambda _: False)
+def test_worker_stop_all_services_if_not_ready(tmp_path):
+    # GIVEN a worker with some services
+    MyCharm.layer = ops.pebble.Layer(
+        {
+            "services": {
+                "foo": {
+                    "summary": "foos all the things",
+                    "description": "bar",
+                    "startup": "enabled",
+                    "override": "merge",
+                    "command": "ls -la",
+                },
+                "bar": {
+                    "summary": "bars the foos",
+                    "description": "bar",
+                    "startup": "enabled",
+                    "command": "exit 1",
+                },
+                "baz": {
+                    "summary": "bazzes all of the bars",
+                    "description": "bar",
+                    "startup": "enabled",
+                    "command": "echo hi",
+                },
+            }
+        }
+    )
+    ctx = testing.Context(
+        MyCharm,
+        meta={
+            "name": "foo",
+            "requires": {"cluster": {"interface": "cluster"}},
+            "containers": {"foo": {"type": "oci-image"}},
+        },
+        config={"options": {"role-all": {"type": "boolean", "default": True}}},
+    )
+    # WHEN the charm receives any event, but it is not ready
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("some: yaml")
+    container = testing.Container(
+        "foo",
+        layers={"base": MyCharm.layer},
+        can_connect=True,
+        mounts={"local": testing.Mount(location=CONFIG_FILE, source=cfg)},
+        execs={
+            testing.Exec(("update-ca-certificates", "--fresh")),
+            testing.Exec(("/bin/foo", "-version"), stdout="foo"),
+        },
+        service_statuses={
+            "foo": ops.pebble.ServiceStatus.ACTIVE,
+            "bar": ops.pebble.ServiceStatus.ACTIVE,
+            "baz": ops.pebble.ServiceStatus.INACTIVE,
+        },
+    )
+    state_out = ctx.run(ctx.on.pebble_ready(container), testing.State(containers={container}))
+
+    # THEN the charm restarts all the services that are down
+    container_out = state_out.get_container("foo")
+    service_statuses = container_out.service_statuses.values()
+    assert all(svc is ops.pebble.ServiceStatus.INACTIVE for svc in service_statuses), [
+        stat.value for stat in service_statuses
+    ]

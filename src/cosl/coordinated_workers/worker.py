@@ -408,13 +408,9 @@ class Worker(ops.Object):
         ]
         return active_roles
 
-    def _update_config(self) -> None:
+    def _update_config(self) -> bool:
         """Update the worker config and restart the workload if necessary."""
-        if not self._container.can_connect():
-            logger.debug("container cannot connect, skipping update_config.")
-            return
-
-        restart = any(
+        return any(
             (
                 self._update_tls_certificates(),
                 self._update_worker_config(),
@@ -422,44 +418,14 @@ class Worker(ops.Object):
             )
         )
 
-        # we restart in 2 situations:
-        # - we need to because our config has changed
-        # - some services are not running
-        success = True
-        if restart:
-            logger.debug("Config changed. Restarting worker services...")
-            success = self.restart()
-        # this can happen if s3 wasn't ready (server gave error) when we processed an earlier event
-        # causing the worker service to die on startup (exited quickly with code...)
-        # so we try to restart it now.
-        # TODO: would be nice if we could be notified of when s3 starts working, so we don't have to
-        #  wait for an update-status and can listen to that instead.
-        else:
-            services_not_up = [
-                svc.name for svc in self._container.get_services().values() if not svc.is_running()
-            ]
-            if services_not_up:
-                logger.debug(
-                    f"Not all services are running: {services_not_up}. Restarting worker services..."
-                )
-                success = self.restart()
-
-        if not success:
-            # this means that we have managed to start the process without pebble errors,
-            # but somehow the status is still not "up" after 15m
-            # we are going to set blocked status, but we can also log it here
-            logger.warning("failed to (re)start the worker services")
-
     def _set_pebble_layer(self) -> bool:
         """Set Pebble layer.
 
+        Assumes that the caller has verified that the worker is ready, i.e.
+        that we have a container and a cluster configuration.
+
         Returns: True if Pebble layer was added, otherwise False.
         """
-        if not self._container.can_connect():
-            return False
-        if not self.roles:
-            return False
-
         current_plan = self._container.get_plan()
         if not (layer := self.pebble_layer):
             return False
@@ -505,8 +471,84 @@ class Worker(ops.Object):
         if self.resources_patch and not self.resources_patch.is_ready():
             logger.debug("Resource patch not ready yet. Skipping reconciliation step.")
             return
+
         self._update_cluster_relation()
-        self._update_config()
+
+        if self.is_ready():
+            logger.debug("Worker ready. Updating config...")
+
+            # we restart in 2 situations:
+            # - we need to because our config has changed
+            # - some services are not running
+            configs_changed = self._update_config()
+            success = None
+            if configs_changed:
+                logger.debug("Config changed. Restarting worker services...")
+                success = self.restart()
+
+            elif services_down := self._get_services_down():
+                logger.debug(f"Some services are down: {services_down}. Restarting worker...")
+                success = self.restart()
+
+            if success is False:
+                # this means that we have managed to start the process without pebble errors,
+                # but somehow the status is still not "up" after 15m
+                # we are going to set blocked status, but we can also log it here
+                logger.warning("failed to (re)start the worker services")
+
+        else:
+            logger.debug("Worker not ready. Tearing down...")
+
+            if self._container.can_connect():
+                logger.debug("Wiping configs and stopping workload...")
+                self._wipe_configs()
+                self.stop()
+
+            else:
+                logger.debug("Container offline: nothing to teardown.")
+
+    def _get_services_down(self) -> List[str]:
+        # this can happen if s3 wasn't ready (server gave error) when we processed an earlier event
+        # causing the worker service to die on startup (exited quickly with code...)
+        # so we try to restart it now.
+        # TODO: would be nice if we could be notified of when s3 starts working, so we don't have to
+        #  wait for an update-status and can listen to that instead.
+        return [
+            svc.name for svc in self._container.get_services().values() if not svc.is_running()
+        ]
+
+    def _wipe_configs(self):
+        """Delete all configuration files on disk, purely for hygiene."""
+        for config_file in (
+            KEY_FILE,
+            CLIENT_CA_FILE,
+            CERT_FILE,
+            S3_TLS_CA_CHAIN_FILE,
+            ROOT_CA_CERT,
+            CONFIG_FILE,
+        ):
+            self._container.remove_path(config_file, recursive=True)
+
+        logger.debug("wiped all configs")
+
+    def stop(self):
+        """Stop the workload and tell pebble to not restart it.
+
+        Assumes that pebble can connect.
+        """
+        # we might be unable to retrieve self.pebble_layer if something goes wrong generating it
+        # for example because we're being torn down and the environment is being weird
+        services = tuple(
+            self.pebble_layer.services
+            if self.pebble_layer
+            else self._container.get_plan().services
+        )
+
+        if not services:
+            logger.warning("nothing to stop: no services found in layer or plan")
+            return
+
+        self._container.stop(*services)
 
     def _update_cluster_relation(self) -> None:
         """Publish all the worker information to relation data."""
@@ -545,26 +587,36 @@ class Worker(ops.Object):
             )
             return None
 
+    def is_ready(self) -> bool:
+        """Check whether the worker has all data it needs to operate."""
+        if not self._container.can_connect():
+            logger.warning("worker not ready: container cannot connect.")
+            return False
+
+        elif len(self.roles) == 0:
+            logger.warning("worker not ready: role missing or misconfigured.")
+            return False
+
+        elif not self._worker_config:
+            logger.warning("worker not ready: coordinator hasn't published a config")
+            return False
+
+        else:
+            return True
+
     def _update_worker_config(self) -> bool:
         """Set worker config for the workload.
+
+        Assumes that the caller has verified that the worker is ready, i.e.
+        that we have a container and a cluster configuration.
 
         Returns: True if config has changed, otherwise False.
         Raises: BlockedStatusError exception if PebbleError, ProtocolError, PathError exceptions
             are raised by container.remove_path
         """
-        if not self._container.can_connect():
-            logger.warning("cannot update worker config: container cannot connect.")
-            return False
-
-        if len(self.roles) == 0:
-            logger.warning("cannot update worker config: role missing or misconfigured.")
-            return False
-
+        # fetch the config from the coordinator
         worker_config = self._worker_config
-        if not worker_config:
-            logger.warning("cannot update worker config: coordinator hasn't published one yet.")
-            return False
-
+        # and compare it against the one on disk (if any)
         if self._running_worker_config() != worker_config:
             config_as_yaml = yaml.safe_dump(worker_config)
             self._container.push(CONFIG_FILE, config_as_yaml, make_dirs=True)
@@ -621,11 +673,11 @@ class Worker(ops.Object):
     def _update_tls_certificates(self) -> bool:
         """Update the TLS certificates on disk according to their availability.
 
+        Assumes that the caller has verified that the worker is ready, i.e.
+        that we have a container and a cluster configuration.
+
         Return True if we need to restart the workload after this update.
         """
-        if not self._container.can_connect():
-            return False
-
         tls_data = self.cluster.get_tls_data(allow_none=True)
         if not tls_data:
             return False
