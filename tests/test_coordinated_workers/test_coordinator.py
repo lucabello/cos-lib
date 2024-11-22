@@ -281,3 +281,66 @@ def test_tracing_receivers_urls(
             "otlp_http": "5.6.7.8:4318",
             "otlp_grpc": "5.6.7.8:4317",
         }
+
+
+@pytest.mark.parametrize(
+    "event",
+    (
+        testing.CharmEvents.update_status(),
+        testing.CharmEvents.start(),
+        testing.CharmEvents.install(),
+        testing.CharmEvents.config_changed(),
+    ),
+)
+def test_invalid_databag_content(coordinator_charm: ops.CharmBase, event):
+    # Test Invalid relations databag for ClusterProvider.gather_addresses_by_role
+
+    # GIVEN a coordinator charm with a cluster relation and invalid remote databag contents
+    requires_relations = {
+        endpoint: testing.Relation(endpoint=endpoint, interface=interface["interface"])
+        for endpoint, interface in {
+            "my-certificates": {"interface": "certificates"},
+            "my-logging": {"interface": "loki_push_api"},
+            "my-charm-tracing": {"interface": "tracing"},
+            "my-workload-tracing": {"interface": "tracing"},
+        }.items()
+    }
+    requires_relations["cluster_worker0"] = testing.Relation(
+        "my-cluster",
+        remote_app_name="worker0",
+        remote_app_data=ClusterRequirerAppData(role="read").dump(),
+    )
+    requires_relations["cluster_worker1"] = testing.Relation(
+        "my-cluster",
+        remote_app_name="worker1",
+        remote_app_data=ClusterRequirerAppData(role="read").dump(),
+    )
+    requires_relations["cluster_worker2"] = testing.Relation(
+        "my-cluster",
+        remote_app_name="worker2",
+    )
+
+    provides_relations = {
+        endpoint: testing.Relation(endpoint=endpoint, interface=interface["interface"])
+        for endpoint, interface in {
+            "my-dashboards": {"interface": "grafana_dashboard"},
+            "my-metrics": {"interface": "prometheus_scrape"},
+        }.items()
+    }
+
+    invalid_databag_state = testing.State(
+        containers={
+            testing.Container("nginx", can_connect=True),
+            testing.Container("nginx-prometheus-exporter", can_connect=True),
+        },
+        relations=list(requires_relations.values()) + list(provides_relations.values()),
+    )
+
+    # WHEN: the coordinator processes any event
+    ctx = testing.Context(coordinator_charm, meta=coordinator_charm.META)
+    with ctx(event, invalid_databag_state) as manager:
+        cluster = manager.charm.coordinator.cluster
+        # THEN the coordinator sets unit to blocked since the cluster is inconsistent with the missing relation.
+        cluster.gather_addresses_by_role()
+        manager.run()
+    assert cluster.model.unit.status == ops.BlockedStatus("[consistency] Cluster inconsistent.")
