@@ -9,10 +9,7 @@ settings:
     - cos-lib
     - team-core
     - team-mesh
-    - team-tracing
-
-  labels:
-    - 25.04
+    - team-tracin
       
   add_gh_comment: false
   sync_description: false
