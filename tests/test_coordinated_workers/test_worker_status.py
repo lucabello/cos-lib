@@ -8,11 +8,11 @@ import pytest
 import tenacity
 from ops import testing
 
-from cosl.coordinated_workers.interface import ClusterProviderAppData
 from cosl.coordinated_workers.worker import (
     NoReadinessCheckEndpointConfiguredError,
     Worker,
 )
+from cosl.interfaces.cluster import ClusterProviderAppData
 
 
 @pytest.fixture(params=[True, False])

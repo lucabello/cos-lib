@@ -1,4 +1,4 @@
-from cosl.coordinated_workers.interface import DatabagModel
+from cosl.interfaces.utils import DatabagModel
 
 
 def test_databag_dump_update():

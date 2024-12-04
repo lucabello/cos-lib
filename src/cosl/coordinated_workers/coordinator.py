@@ -32,13 +32,13 @@ from ops import StatusBase
 
 import cosl
 from cosl.coordinated_workers import worker
-from cosl.coordinated_workers.interface import ClusterProvider, RemoteWriteEndpoint
 from cosl.coordinated_workers.nginx import (
     Nginx,
     NginxMappingOverrides,
     NginxPrometheusExporter,
 )
 from cosl.helpers import check_libs_installed
+from cosl.interfaces.cluster import ClusterProvider, RemoteWriteEndpoint
 
 check_libs_installed(
     "charms.data_platform_libs.v0.s3",

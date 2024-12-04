@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from cosl.coordinated_workers.interface import DatabagModel, DataValidationError
+from cosl.interfaces.utils import DatabagModel, DataValidationError
 
 
 class MyDataModel(DatabagModel):

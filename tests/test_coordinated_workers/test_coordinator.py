@@ -10,7 +10,7 @@ from src.cosl.coordinated_workers.coordinator import (
     Coordinator,
     S3NotFoundError,
 )
-from src.cosl.coordinated_workers.interface import ClusterRequirerAppData
+from src.cosl.interfaces.cluster import ClusterRequirerAppData
 
 
 @pytest.fixture

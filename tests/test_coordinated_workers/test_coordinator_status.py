@@ -9,7 +9,7 @@ from lightkube import ApiError
 from ops import testing
 
 from cosl.coordinated_workers.coordinator import ClusterRolesConfig, Coordinator
-from cosl.coordinated_workers.interface import ClusterProviderAppData, ClusterRequirerAppData
+from cosl.interfaces.cluster import ClusterProviderAppData, ClusterRequirerAppData
 from tests.test_coordinated_workers.test_worker_status import k8s_patch
 
 my_roles = ClusterRolesConfig(
