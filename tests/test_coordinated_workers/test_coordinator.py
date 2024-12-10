@@ -79,10 +79,12 @@ def coordinator_charm(request):
                 "my-charm-tracing": {"interface": "tracing", "limit": 1},
                 "my-workload-tracing": {"interface": "tracing", "limit": 1},
                 "my-s3": {"interface": "s3"},
+                "my-ds-exchange-require": {"interface": "grafana_datasource_exchange"},
             },
             "provides": {
                 "my-dashboards": {"interface": "grafana_dashboard"},
                 "my-metrics": {"interface": "prometheus_scrape"},
+                "my-ds-exchange-provide": {"interface": "grafana_datasource_exchange"},
             },
             "containers": {
                 "nginx": {"type": "oci-image"},
@@ -121,6 +123,8 @@ def coordinator_charm(request):
                     "charm-tracing": "my-charm-tracing",
                     "workload-tracing": "my-workload-tracing",
                     "s3": "my-s3",
+                    "send-datasource": "my-ds-exchange-provide",
+                    "receive-datasource": "my-ds-exchange-require",
                 },
                 nginx_config=lambda coordinator: f"nginx configuration for {coordinator._charm.meta.name}",
                 workers_config=lambda coordinator: f"workers configuration for {coordinator._charm.meta.name}",

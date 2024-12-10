@@ -39,6 +39,7 @@ from cosl.coordinated_workers.nginx import (
 )
 from cosl.helpers import check_libs_installed
 from cosl.interfaces.cluster import ClusterProvider, RemoteWriteEndpoint
+from cosl.interfaces.datasource_exchange import DatasourceExchange
 
 check_libs_installed(
     "charms.data_platform_libs.v0.s3",
@@ -161,6 +162,8 @@ _EndpointMapping = TypedDict(
         "metrics": str,
         "charm-tracing": str,
         "workload-tracing": str,
+        "send-datasource": Optional[str],
+        "receive-datasource": Optional[str],
         "s3": str,
     },
     total=True,
@@ -277,6 +280,11 @@ class Coordinator(ops.Object):
         )
 
         self.s3_requirer = S3Requirer(self._charm, self._endpoints["s3"])
+        self.datasource_exchange = DatasourceExchange(
+            self._charm,
+            provider_endpoint=self._endpoints.get("send-datasource", None),
+            requirer_endpoint=self._endpoints.get("receive-datasource", None),
+        )
 
         self._grafana_dashboards = GrafanaDashboardProvider(
             self._charm, relation_name=self._endpoints["grafana-dashboards"]

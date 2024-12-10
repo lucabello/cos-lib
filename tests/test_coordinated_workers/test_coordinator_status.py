@@ -38,6 +38,8 @@ class MyCoordCharm(ops.CharmBase):
                 "metrics": "metrics-endpoint",
                 "charm-tracing": "self-charm-tracing",
                 "workload-tracing": "self-workload-tracing",
+                "send-datasource": None,
+                "receive-datasource": "my-ds-exchange-require",
             },
             nginx_config=lambda _: "nginx config",
             workers_config=lambda _: "worker config",
@@ -64,11 +66,13 @@ def ctx(coord_charm):
                 "certificates": {"interface": "tls-certificates"},
                 "self-charm-tracing": {"interface": "tracing", "limit": 1},
                 "self-workload-tracing": {"interface": "tracing", "limit": 1},
+                "my-ds-exchange-require": {"interface": "grafana_datasource_exchange"},
             },
             "provides": {
                 "cluster": {"interface": "cluster"},
                 "grafana-dashboard": {"interface": "grafana_dashboard"},
                 "metrics-endpoint": {"interface": "prometheus_scrape"},
+                "my-ds-exchange-provide": {"interface": "grafana_datasource_exchange"},
             },
             "containers": {
                 "nginx": {"type": "oci-image"},

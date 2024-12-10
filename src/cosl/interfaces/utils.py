@@ -81,3 +81,45 @@ class DatabagModel(pydantic.BaseModel):
         dct = self.model_dump(mode="json", by_alias=True, exclude_defaults=True)  # type: ignore
         _databag.update({k: json.dumps(v) for k, v in dct.items()})
         return _databag
+
+
+# FIXME: in pydantic v2, the json stuff we've been doing is no longer necessary.
+#  It becomes much easier to work with Json fields and the databagmodel class becomes much simpler.
+#  We should rewrite the cluster implementation to use this class,
+#  and replace the original DatabagModel with it
+class DatabagModelV2(pydantic.BaseModel):
+    """Base databag model."""
+
+    model_config = ConfigDict(
+        # tolerate additional keys in databag
+        extra="ignore",
+        # Allow instantiating this class by field name (instead of forcing alias).
+        populate_by_name=True,
+    )  # type: ignore
+    """Pydantic config."""
+
+    @classmethod
+    def load(cls, databag: _RawDatabag):
+        """Load this model from a Juju databag."""
+        try:
+            return cls.model_validate_json(json.dumps(dict(databag)))  # type: ignore
+        except pydantic.ValidationError as e:
+            msg = f"failed to validate databag: {databag}"
+            if databag:
+                log.debug(msg, exc_info=True)
+            raise DataValidationError(msg) from e
+
+    def dump(self, databag: Optional[_RawDatabag] = None, clear: bool = True) -> _RawDatabag:
+        """Write the contents of this model to Juju databag.
+
+        :param databag: the databag to write the data to.
+        :param clear: ensure the databag is cleared before writing it.
+        """
+        _databag: _RawDatabag = {} if databag is None else databag
+
+        if clear:
+            _databag.clear()
+
+        dct = self.model_dump(mode="json", by_alias=True, exclude_defaults=True, round_trip=True)  # type: ignore
+        _databag.update(dct)
+        return _databag
