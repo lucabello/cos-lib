@@ -8,7 +8,6 @@ See https://github.com/canonical/charm-relation-interfaces/tree/main/interfaces/
 for the interface specification.
 """
 
-
 # FIXME: the interfaces import (because it's a git dep perhaps?)
 #  can't be type-checked, which breaks everything
 # pyright: reportMissingImports=false
@@ -30,11 +29,8 @@ from typing import (
 )
 
 import ops
-from interfaces.grafana_datasource_exchange.v0.schema import (
-    GrafanaDatasource,
-    GrafanaSourceAppData,
-)
 from ops import CharmBase
+from pydantic import BaseModel, Field, Json
 from typing_extensions import TypedDict
 
 import cosl.interfaces.utils
@@ -43,6 +39,26 @@ from cosl.interfaces.utils import DataValidationError
 log = logging.getLogger("datasource_exchange")
 
 DS_EXCHANGE_INTERFACE_NAME = "grafana_datasource_exchange"
+
+
+# FIXME copy-pasta'd from charm-relation-interfaces. Keep in sync!
+#  see https://github.com/canonical/charm-relation-interfaces/issues/213
+class GrafanaDatasource(BaseModel):
+    """GrafanaDatasource model."""
+
+    type: str = Field(
+        description="Type of the datasource, typically one of "
+        "https://grafana.com/docs/grafana/latest/datasources/#built-in-core-data-sources.",
+        examples=["tempo", "loki", "prometheus", "elasticsearch"],
+    )
+    uid: str = Field(description="Grafana datasource UID, as assigned by Grafana.")
+    grafana_uid: str = Field(description="Grafana UID.")
+
+
+class GrafanaSourceAppData(BaseModel):
+    """Application databag model for both sides of this interface."""
+
+    datasources: Json[List[GrafanaDatasource]]
 
 
 class DSExchangeAppData(cosl.interfaces.utils.DatabagModelV2, GrafanaSourceAppData):

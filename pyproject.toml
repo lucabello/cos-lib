@@ -17,10 +17,10 @@ dependencies = [
     "pydantic",
     "tenacity",
     "jsonschema",
+    "cryptography",
     "PyYAML",
     "typing-extensions",
     "lightkube>=v0.15.4",
-    "charm-relation-interfaces @ git+https://github.com/canonical/charm-relation-interfaces",
 ]
 classifiers = [
     "Programming Language :: Python :: 3.8",
