@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cosl"
-version = "0.0.45"
+version = "0.0.47"
 authors = [
     { name = "sed-i", email = "82407168+sed-i@users.noreply.github.com" },
 ]
@@ -16,8 +16,6 @@ dependencies = [
     "ops",
     "pydantic",
     "tenacity",
-    "jsonschema",
-    "cryptography",
     "PyYAML",
     "typing-extensions",
     "lightkube>=v0.15.4",
