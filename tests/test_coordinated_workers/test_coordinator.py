@@ -1,16 +1,19 @@
 import dataclasses
 import json
+from unittest.mock import patch
 
 import ops
 import pytest
-from ops import testing
+from ops import RelationChangedEvent, testing
 
+from cosl.coordinated_workers.interface import ClusterRemovedEvent, DataValidationError
 from src.cosl.coordinated_workers.coordinator import (
     ClusterRolesConfig,
     Coordinator,
     S3NotFoundError,
 )
 from src.cosl.interfaces.cluster import ClusterRequirerAppData
+from tests.test_coordinated_workers.test_worker import MyCharm
 
 
 @pytest.fixture
@@ -348,3 +351,52 @@ def test_invalid_databag_content(coordinator_charm: ops.CharmBase, event):
         cluster.gather_addresses_by_role()
         manager.run()
     assert cluster.model.unit.status == ops.BlockedStatus("[consistency] Cluster inconsistent.")
+
+
+@pytest.mark.parametrize("app", (True, False))
+def test_invalid_app_or_unit_databag(
+    coordinator_charm: ops.CharmBase, coordinator_state, app: bool
+):
+    # Test that when a relation changes and either the app or unit data is invalid
+    #   the worker emits a ClusterRemovedEvent
+
+    # WHEN you define a properly configured charm
+    ctx = testing.Context(
+        MyCharm,
+        meta={
+            "name": "foo",
+            "requires": {"cluster": {"interface": "cluster"}},
+            "containers": {"foo": {"type": "oci-image"}},
+        },
+        config={"options": {"role-all": {"type": "boolean", "default": True}}},
+    )
+
+    # IF the relation data is invalid (forced by the patched Exception)
+    object_to_patch = (
+        "cosl.coordinated_workers.interface.ClusterProviderAppData.load"
+        if app
+        else "cosl.coordinated_workers.interface.ClusterRequirerUnitData.load"
+    )
+
+    with patch(object_to_patch, side_effect=DataValidationError("Mock error")):
+        # AND the relation changes
+        relation = testing.Relation("cluster")
+
+        ctx.run(
+            ctx.on.relation_changed(relation),
+            testing.State(
+                containers={testing.Container("foo", can_connect=True)}, relations={relation}
+            ),
+        )
+
+    # NOTE: this difference should not exist, and the ClusterRemovedEvent should always
+    #   be emitted in case of corrupted data
+
+    # THEN the charm emits a ClusterRemovedEvent
+    if app:
+        assert len(ctx.emitted_events) == 2
+        assert isinstance(ctx.emitted_events[0], RelationChangedEvent)
+        assert isinstance(ctx.emitted_events[1], ClusterRemovedEvent)
+    else:
+        assert len(ctx.emitted_events) == 1
+        assert isinstance(ctx.emitted_events[0], RelationChangedEvent)

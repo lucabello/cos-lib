@@ -7,6 +7,7 @@ import ops
 import pytest
 import yaml
 from ops import testing
+from scenario.errors import UncaughtCharmError
 
 from cosl.coordinated_workers.worker import (
     CERT_FILE,
@@ -774,3 +775,131 @@ def test_worker_stop_all_services_if_not_ready(tmp_path):
     assert all(svc is ops.pebble.ServiceStatus.INACTIVE for svc in service_statuses), [
         stat.value for stat in service_statuses
     ]
+
+
+@patch("socket.getfqdn")
+def test_invalid_url(mock_socket_fqdn):
+    # Test that when socket returns an invalid url as a Fully Qualified Domain Name,
+    #   ClusterRequirer.publish_unit_address raises a ValueError exception
+
+    # GIVEN a properly configured charm
+    ctx = testing.Context(
+        MyCharm,
+        meta={
+            "name": "foo",
+            "requires": {"cluster": {"interface": "cluster"}},
+            "containers": {"foo": {"type": "oci-image"}},
+        },
+        config={"options": {"role-all": {"type": "boolean", "default": True}}},
+    )
+
+    # AND ClusterRequirer is passed an invalid url as FQDN
+    mock_socket_fqdn.return_value = "http://www.invalid-]url.com"
+
+    # WHEN the charm executes any event
+    # THEN the charm raises an error with the appropriate cause
+    with pytest.raises(UncaughtCharmError) as exc:
+        ctx.run(ctx.on.update_status(), testing.State(containers={testing.Container("foo")}))
+    assert isinstance(exc.value.__cause__, ValueError)
+
+
+@pytest.mark.parametrize(
+    "remote_databag, expected",
+    (
+        (
+            {
+                "charm_tracing_receivers": json.dumps({"url": "test-url.com"}),
+                "worker_config": json.dumps("test"),
+            },
+            {"url": "test-url.com"},
+        ),
+        (
+            {"charm_tracing_receivers": json.dumps(None), "worker_config": json.dumps("test")},
+            {},
+        ),
+    ),
+)
+def test_get_charm_tracing_receivers(remote_databag, expected):
+    # Test that when a relation changes the correct charm_tracing_receivers
+    #   are returned by the ClusterRequirer
+
+    # GIVEN a charm with a relation
+    ctx = testing.Context(
+        MyCharm,
+        meta={
+            "name": "foo",
+            "requires": {"cluster": {"interface": "cluster"}},
+            "containers": {"foo": {"type": "oci-image"}},
+        },
+        config={"options": {"role-all": {"type": "boolean", "default": True}}},
+    )
+    container = testing.Container(
+        "foo",
+        execs={testing.Exec(("update-ca-certificates", "--fresh"))},
+        can_connect=True,
+    )
+
+    relation = testing.Relation(
+        "cluster",
+        remote_app_data=remote_databag,
+    )
+
+    # WHEN the relation changes
+    with ctx(
+        ctx.on.relation_changed(relation),
+        testing.State(containers={container}, relations={relation}),
+    ) as mgr:
+        charm = mgr.charm
+        # THEN the charm tracing receivers are picked up correctly
+        assert charm.worker.cluster.get_charm_tracing_receivers() == expected
+
+
+@pytest.mark.parametrize(
+    "remote_databag, expected",
+    (
+        (
+            {
+                "workload_tracing_receivers": json.dumps({"url": "test-url.com"}),
+                "worker_config": json.dumps("test"),
+            },
+            {"url": "test-url.com"},
+        ),
+        (
+            {"workload_tracing_receivers": json.dumps(None), "worker_config": json.dumps("test")},
+            {},
+        ),
+    ),
+)
+def test_get_workload_tracing_receivers(remote_databag, expected):
+    # Test that when a relation changes the correct workload_tracing_receivers
+    #   are returned by the ClusterRequirer
+
+    # GIVEN a charm with a relation
+    ctx = testing.Context(
+        MyCharm,
+        meta={
+            "name": "foo",
+            "requires": {"cluster": {"interface": "cluster"}},
+            "containers": {"foo": {"type": "oci-image"}},
+        },
+        config={"options": {"role-all": {"type": "boolean", "default": True}}},
+    )
+    container = testing.Container(
+        "foo",
+        execs={testing.Exec(("update-ca-certificates", "--fresh"))},
+        can_connect=True,
+    )
+
+    relation = testing.Relation(
+        "cluster",
+        remote_app_data=remote_databag,
+    )
+
+    # WHEN the relation changes
+    with ctx(
+        ctx.on.relation_changed(relation),
+        testing.State(containers={container}, relations={relation}),
+    ) as mgr:
+        charm = mgr.charm
+        # THEN the charm tracing receivers are picked up correctly
+        assert charm.worker.cluster.get_workload_tracing_receivers() == expected
