@@ -1,5 +1,5 @@
 settings:
-  jira_project_key: "OPENG"
+  jira_project_key: "OBC"
   status_mapping:
     opened: Untriaged
     closed: done
@@ -7,9 +7,6 @@ settings:
     
   components:
     - cos-lib
-    - team-core
-    - team-mesh
-    - team-tracin
       
   add_gh_comment: false
   sync_description: false
