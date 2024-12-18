@@ -51,8 +51,10 @@ check_libs_installed(
     "charms.tempo_coordinator_k8s.v0.tracing",
     "charms.observability_libs.v0.kubernetes_compute_resources_patch",
     "charms.tls_certificates_interface.v3.tls_certificates",
+    "charms.catalogue_k8s.v1.catalogue",
 )
 
+from charms.catalogue_k8s.v1.catalogue import CatalogueConsumer, CatalogueItem
 from charms.data_platform_libs.v0.s3 import S3Requirer
 from charms.grafana_k8s.v0.grafana_dashboard import GrafanaDashboardProvider
 from charms.loki_k8s.v1.loki_push_api import LogForwarder, LokiPushApiConsumer
@@ -165,6 +167,7 @@ _EndpointMapping = TypedDict(
         "send-datasource": Optional[str],
         "receive-datasource": Optional[str],
         "s3": str,
+        "catalogue": Optional[str],
     },
     total=True,
 )
@@ -204,6 +207,7 @@ class Coordinator(ops.Object):
         container_name: Optional[str] = None,
         remote_write_endpoints: Optional[Callable[[], List[RemoteWriteEndpoint]]] = None,
         workload_tracing_protocols: Optional[List[ReceiverProtocol]] = None,
+        catalogue_item: Optional[CatalogueItem] = None,
     ):
         """Constructor for a Coordinator object.
 
@@ -231,6 +235,7 @@ class Coordinator(ops.Object):
                 and the worker charm can push metrics to.
             workload_tracing_protocols: A list of protocols that the worker intends to send
                 workload traces with.
+            catalogue_item: A catalogue application entry to be sent to catalogue.
 
         Raises:
         ValueError:
@@ -261,6 +266,7 @@ class Coordinator(ops.Object):
         self._container_name = container_name
         self._resources_limit_options = resources_limit_options or {}
         self.remote_write_endpoints_getter = remote_write_endpoints
+        self._catalogue_item = catalogue_item
 
         self.nginx = Nginx(
             self._charm,
@@ -327,6 +333,12 @@ class Coordinator(ops.Object):
                 resource_reqs_func=self._adjust_resource_requirements,
             )
             if self._resources_requests_getter
+            else None
+        )
+
+        self.catalogue = (
+            CatalogueConsumer(self._charm, item=self._catalogue_item)
+            if self._endpoints.get("catalogue", None)
             else None
         )
 
@@ -629,6 +641,8 @@ class Coordinator(ops.Object):
 
         self._update_nginx_tls_certificates()
         self.update_cluster()
+        if self.catalogue:
+            self.catalogue.update_item(item=self._catalogue_item)  # type: ignore
 
     @property
     def _peers(self) -> Optional[Set[ops.model.Unit]]:
