@@ -80,8 +80,9 @@ class LokiEmitter:
             resp = self._send_request(req, jsondata_encoded)
         except urllib.error.HTTPError as e:
             if not self._error_notified_once:
-                logger.error(f"error pushing logs to {self.url}: {e.status, e.reason}")  # type: ignore
+                # set this BEFORE logging anything, or we'll recurse into a stack overflow!
                 self._error_notified_once = True
+                logger.error(f"error pushing logs to {self.url}: {e.code, e.reason}")  # type: ignore
             return
 
         if resp.getcode() != self.success_response_code:

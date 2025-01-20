@@ -5,6 +5,7 @@ import json
 import logging
 from typing import List
 from unittest.mock import _Call, patch
+from urllib.error import HTTPError
 
 import pytest
 
@@ -72,3 +73,30 @@ def test_root_logging(send_request, n_lokis, loglevel_info):
     assert (
         _get_logs_severity(send_request.call_args_list) == ["info"] * n_lokis + ["error"] * n_lokis
     )
+
+
+@patch("src.cosl.loki_logger.LokiEmitter._send_request")
+def test_logging_fail_send(send_request_mock):
+    # GIVEN urllib fails submitting the logs with any httperror
+    send_request_mock.side_effect = HTTPError(
+        url="http://foo", code=123, msg="foo", hdrs={}, fp=None
+    )
+    root_logger = logging.getLogger()
+
+    url = "http://loki_1.com"
+    handler = LokiHandler(url=url, labels={"test-label": "loki-id-1"})
+    root_logger.addHandler(handler)
+
+    # WHEN we submit any logs
+    try:
+        any_logger = logging.getLogger("test-foo")
+        any_logger.info("something")
+        any_logger.error("something else")
+    finally:
+        # Cleanup the test env:
+        #   We're mutating the root logger by adding handlers to it,
+        #   that means any tests that will run after this one will also log to our
+        #   handlers unless we do this cleanup.
+        root_logger.removeHandler(handler)
+
+    # THEN the interpreter doesn't blow up
