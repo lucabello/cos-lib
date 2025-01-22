@@ -80,7 +80,8 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, cast
+from types import SimpleNamespace
+from typing import Any, Dict, Final, List, Optional, Union, cast
 
 import yaml
 
@@ -92,6 +93,69 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_generic_alert_rules: Final = SimpleNamespace(
+    # We use "5m" to avoid false positives on expected temporary "down", e.g. during intentional (re)start.
+    # Juju topology will be later injected by providers of alert rules.
+    host_down={
+        "alert": "HostDown",
+        "expr": "up < 1",
+        "for": "5m",
+        "labels": {"severity": "critical"},
+        "annotations": {
+            "summary": "Host '{{ $labels.instance }}' is down.",
+            "description": """Host '{{ $labels.instance }}' is down, failed to scrape.
+                            VALUE = {{ $value }}
+                            LABELS = {{ $labels }}""",
+        },
+    },
+    host_metrics_missing={
+        "alert": "HostMetricsMissing",
+        # We use "absent(up)" with "for: 5m" because the alert transitions from "Pending" to "Firing".
+        # If query portability is desired, "absent_over_time(up[5m])" is an alternative.
+        "expr": "absent(up)",
+        "for": "5m",
+        "labels": {"severity": "critical"},
+        "annotations": {
+            "summary": "Metrics not received from host '{{ $labels.instance }}', failed to remote write.",
+            "description": """Metrics not received from host '{{ $labels.instance }}', failed to remote write.
+                            VALUE = {{ $value }}
+                            LABELS = {{ $labels }}""",
+        },
+    },
+)
+
+"""
+Generic alert rules are in groups to ensure a predictable group name.
+"""
+generic_alert_groups: Final = SimpleNamespace(
+    # Group names must be unique per alert rule file. The final group names may be adjusted by the
+    # providers of alert rules to include some topology information, to addresses deduplication.
+    application_rules={
+        "groups": [
+            {
+                "name": "HostHealth",
+                "rules": [
+                    _generic_alert_rules.host_down,
+                    _generic_alert_rules.host_metrics_missing,
+                ],
+            },
+        ]
+    },
+    # If we push to Prometheus via remote-write with an aggregator, there are no UP metrics associated.
+    # Only a time series for the metrics we have pushed is available so omit the HostDown rule.
+    aggregator_rules={
+        "groups": [
+            {
+                "name": "AggregatorHostHealth",
+                "rules": [
+                    _generic_alert_rules.host_metrics_missing,
+                ],
+            },
+        ]
+    },
+)
 
 
 class InvalidRulePathError(Exception):
