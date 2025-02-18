@@ -4,6 +4,7 @@
 """Workload manager for Nginx. Used by the coordinator to load-balance and group the workers."""
 
 import logging
+import subprocess
 from pathlib import Path
 from typing import Callable, Optional, TypedDict
 
@@ -205,3 +206,15 @@ class NginxPrometheusExporter:
                 },
             }
         )
+
+
+def is_ipv6_enabled() -> bool:
+    """Check if IPv6 is enabled on the container's network interfaces."""
+    try:
+        output = subprocess.run(
+            ["ip", "-6", "address", "show"], check=True, capture_output=True, text=True
+        )
+    except subprocess.CalledProcessError:
+        # if running the command failed for any reason, assume ipv6 is not enabled.
+        return False
+    return bool(output.stdout)
