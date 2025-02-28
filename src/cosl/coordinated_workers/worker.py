@@ -476,6 +476,9 @@ class Worker(ops.Object):
 
         if self.is_ready():
             logger.debug("Worker ready. Updating config...")
+            if worker_ports := self.cluster.get_worker_ports():
+                logger.debug(f"opening ports {worker_ports} as received from the coordinator.")
+                self._charm.unit.set_ports(*worker_ports)
 
             # we restart in 2 situations:
             # - we need to because our config has changed

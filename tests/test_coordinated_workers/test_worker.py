@@ -343,6 +343,38 @@ def test_get_remote_write_endpoints(remote_databag, expected):
         assert charm.worker.cluster.get_remote_write_endpoints() == expected
 
 
+@patch.object(Worker, "is_ready", new=lambda _: True)
+@pytest.mark.parametrize(
+    "ports",
+    ([10, 11, 42], [2, 1232]),
+)
+def test_worker_ports(ports):
+    ctx = testing.Context(
+        MyCharm,
+        meta={
+            "name": "foo",
+            "requires": {"cluster": {"interface": "cluster"}},
+            "containers": {"foo": {"type": "oci-image"}},
+        },
+        config={"options": {"role-all": {"type": "boolean", "default": True}}},
+    )
+    relation = testing.Relation(
+        "cluster",
+        remote_app_data={
+            "worker_config": json.dumps(yaml.safe_dump({"testing": "config"})),
+            "worker_ports": json.dumps(ports),
+        },
+    )
+    with patch("ops.model.Unit.set_ports") as set_ports_patch:
+        ctx.run(
+            ctx.on.relation_changed(relation),
+            testing.State(
+                containers={testing.Container("foo", can_connect=True)}, relations={relation}
+            ),
+        )
+        set_ports_patch.assert_called_with(*ports)
+
+
 def test_config_preprocessor():
     # GIVEN a charm with a config preprocessor
     new_config = {"modified": "config"}

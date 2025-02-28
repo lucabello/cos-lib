@@ -12,7 +12,7 @@ from src.cosl.coordinated_workers.coordinator import (
     Coordinator,
     S3NotFoundError,
 )
-from src.cosl.interfaces.cluster import ClusterRequirerAppData
+from src.cosl.interfaces.cluster import ClusterRequirerAppData, ClusterRequirerUnitData
 from tests.test_coordinated_workers.test_worker import MyCharm
 
 
@@ -41,16 +41,46 @@ def coordinator_state():
         "my-cluster",
         remote_app_name="worker0",
         remote_app_data=ClusterRequirerAppData(role="read").dump(),
+        remote_units_data={
+            0: ClusterRequirerUnitData(
+                juju_topology={
+                    "application": "reader",
+                    "unit": "reader/0",
+                    "charm_name": "test-reader",
+                },
+                address="something",
+            ).dump()
+        },
     )
     requires_relations["cluster_worker1"] = testing.Relation(
         "my-cluster",
         remote_app_name="worker1",
         remote_app_data=ClusterRequirerAppData(role="write").dump(),
+        remote_units_data={
+            0: ClusterRequirerUnitData(
+                juju_topology={
+                    "application": "writer",
+                    "unit": "writer/0",
+                    "charm_name": "test-writer",
+                },
+                address="something",
+            ).dump()
+        },
     )
     requires_relations["cluster_worker2"] = testing.Relation(
         "my-cluster",
         remote_app_name="worker2",
         remote_app_data=ClusterRequirerAppData(role="backend").dump(),
+        remote_units_data={
+            0: ClusterRequirerUnitData(
+                juju_topology={
+                    "application": "backender",
+                    "unit": "backender/0",
+                    "charm_name": "test-backender",
+                },
+                address="something",
+            ).dump()
+        },
     )
 
     provides_relations = {
@@ -95,6 +125,8 @@ def coordinator_charm(request):
             },
         }
 
+        _worker_ports = None
+
         def __init__(self, framework: ops.Framework):
             super().__init__(framework)
             # Note: Here it is a good idea not to use context mgr because it is "ops aware"
@@ -128,9 +160,11 @@ def coordinator_charm(request):
                     "s3": "my-s3",
                     "send-datasource": "my-ds-exchange-provide",
                     "receive-datasource": "my-ds-exchange-require",
+                    "catalogue": None,
                 },
                 nginx_config=lambda coordinator: f"nginx configuration for {coordinator._charm.meta.name}",
                 workers_config=lambda coordinator: f"workers configuration for {coordinator._charm.meta.name}",
+                worker_ports=self._worker_ports,
                 # nginx_options: Optional[NginxMappingOverrides] = None,
                 # is_coherent: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
                 # is_recommended: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
@@ -163,6 +197,36 @@ def test_worker_roles_subset_of_minimal_deployment(
 
         # THEN the deployment is not coherent
         assert not charm.coordinator.is_coherent
+
+
+def test_worker_ports_published(
+    coordinator_state: testing.State,
+    coordinator_charm: ops.CharmBase,
+):
+    ports_per_role = {"read": (10, 22), "write": (1, 2132)}
+
+    def _worker_ports(_, role):
+        return ports_per_role.get(role, ())
+
+    coordinator_charm._worker_ports = _worker_ports
+
+    # GIVEN a coordinator_charm that has these ports configured
+    ctx = testing.Context(coordinator_charm, meta=coordinator_charm.META)
+
+    # WHEN we process any event
+    state_out = ctx.run(
+        ctx.on.update_status(),
+        state=dataclasses.replace(coordinator_state, leader=True),
+    )
+    # THEN the ports are correctly distributed to the workers via their relations
+    worker_relations = state_out.get_relations("my-cluster")
+    for relation in worker_relations:
+        remote_worker_role = json.loads(relation.remote_app_data["role"])
+        expected_ports = ports_per_role.get(remote_worker_role, ())
+
+        assert set(json.loads(relation.local_app_data.get("worker_ports", ()))) == set(
+            expected_ports
+        )
 
 
 def test_without_s3_integration_raises_error(

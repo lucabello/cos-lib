@@ -14,6 +14,7 @@ import json
 import logging
 from typing import (
     Any,
+    Callable,
     Counter,
     Dict,
     FrozenSet,
@@ -22,6 +23,7 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Sequence,
     Set,
     Tuple,
 )
@@ -122,6 +124,8 @@ class ClusterProviderAppData(cosl.interfaces.utils.DatabagModel):
     """Endpoints to which the the worker can push workload traces to."""
     remote_write_endpoints: Optional[List[RemoteWriteEndpoint]] = None
     """Endpoints to which the workload (and the worker charm) can push metrics to."""
+    worker_ports: Optional[List[int]] = None
+    """Ports that the worker should open. If not provided, the worker will open all the legacy ones."""
 
     ### TLS stuff
     ca_cert: Optional[str] = None
@@ -176,11 +180,13 @@ class ClusterProvider(Object):
         meta_roles: Optional[Mapping[str, Iterable[str]]] = None,
         key: Optional[str] = None,
         endpoint: str = DEFAULT_ENDPOINT_NAME,
+        worker_ports: Optional[Callable[[str], Sequence[int]]] = None,
     ):
         super().__init__(charm, key or endpoint)
         self._charm = charm
         self._roles = roles
         self._meta_roles = meta_roles or {}
+        self._worker_ports = worker_ports
         self.juju_topology = cosl.JujuTopology.from_charm(self._charm)
 
         # filter out common unhappy relation states
@@ -225,6 +231,14 @@ class ClusterProvider(Object):
         """Publish the config to all related worker clusters."""
         for relation in self._relations:
             if relation and self._remote_data_ready(relation):
+                # obtain the worker ports for this relation, given the role advertised by the remote
+                if worker_ports := self._worker_ports:
+                    _worker_ports = list(
+                        worker_ports(ClusterRequirerAppData.load(relation.data[relation.app]).role)
+                    )
+                else:
+                    _worker_ports = None
+
                 local_app_databag = ClusterProviderAppData(
                     worker_config=worker_config,
                     loki_endpoints=loki_endpoints,
@@ -235,6 +249,7 @@ class ClusterProvider(Object):
                     workload_tracing_receivers=workload_tracing_receivers,
                     remote_write_endpoints=remote_write_endpoints,
                     s3_tls_ca_chain=s3_tls_ca_chain,
+                    worker_ports=_worker_ports,
                 )
                 local_app_databag.dump(relation.data[self.model.app])
 
@@ -485,6 +500,13 @@ class ClusterRequirer(Object):
         if data:
             return yaml.safe_load(data.worker_config)
         return {}
+
+    def get_worker_ports(self) -> Optional[Tuple[int, ...]]:
+        """Obtain, from the cluster relation, the ports that the worker should be opening."""
+        data = self._get_data_from_coordinator()
+        if data and data.worker_ports:
+            return tuple(data.worker_ports)
+        return
 
     def get_loki_endpoints(self) -> Dict[str, str]:
         """Fetch the loki endpoints from the coordinator databag."""

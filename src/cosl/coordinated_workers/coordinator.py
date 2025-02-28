@@ -20,6 +20,7 @@ from typing import (
     List,
     Mapping,
     Optional,
+    Sequence,
     Set,
     TypedDict,
 )
@@ -199,6 +200,7 @@ class Coordinator(ops.Object):
         endpoints: _EndpointMapping,
         nginx_config: Callable[["Coordinator"], str],
         workers_config: Callable[["Coordinator"], str],
+        worker_ports: Optional[Callable[[str], Sequence[int]]] = None,
         nginx_options: Optional[NginxMappingOverrides] = None,
         is_coherent: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
         is_recommended: Optional[Callable[[ClusterProvider, ClusterRolesConfig], bool]] = None,
@@ -219,6 +221,7 @@ class Coordinator(ops.Object):
             nginx_config: A function generating the Nginx configuration file for the workload.
             workers_config: A function generating the configuration for the workers, to be
                 published in relation data.
+            worker_ports: A function returning the ports that a worker with a given role should open.
             endpoints: Endpoint names for coordinator relations, as defined in metadata.yaml.
             nginx_options: Non-default config options for Nginx.
             is_coherent: Custom coherency checker for a minimal deployment.
@@ -242,13 +245,13 @@ class Coordinator(ops.Object):
             If `resources_requests` is not None and `container_name` is None, a ValueError is raised.
         """
         super().__init__(charm, key="coordinator")
+        _validate_container_name(container_name, resources_requests)
+
         self._charm = charm
         self.topology = cosl.JujuTopology.from_charm(self._charm)
         self._external_url = external_url
         self._worker_metrics_port = worker_metrics_port
         self._endpoints = endpoints
-
-        _validate_container_name(container_name, resources_requests)
         self.roles_config = roles_config
 
         self.cluster = ClusterProvider(
@@ -256,6 +259,7 @@ class Coordinator(ops.Object):
             frozenset(roles_config.roles),
             roles_config.meta_roles,
             endpoint=self._endpoints["cluster"],
+            worker_ports=worker_ports,
         )
 
         self._is_coherent = is_coherent
