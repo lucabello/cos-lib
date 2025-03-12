@@ -346,6 +346,13 @@ class Worker(ops.Object):
             statuses.append(
                 BlockedStatus("Invalid or no roles assigned: please configure some valid roles")
             )
+        if self._tls_misconfigured:
+            statuses.append(
+                BlockedStatus(
+                    "TLS misconfigured: the ingressed endpoints are https, "
+                    "but the coordinator didn't give us a certificate (yet)."
+                )
+            )
 
         # if none of the conditions above applies, the worker should in principle be either up or starting
         if not statuses:
@@ -804,6 +811,25 @@ class Worker(ops.Object):
             return result.group(1)
         return None
 
+    @property
+    def _tls_misconfigured(self) -> bool:
+        """Helper method to determine if tls is misconfigured."""
+        # misconfiguration: the ingress has a tls relation, but we (the coordinator) don't:
+        # as a consequence, we obtain **https** receiver endpoints,
+        # but we don't have a server certificate.
+        receiver_endpoints = {
+            *self.cluster.get_workload_tracing_receivers().values(),
+            *self.cluster.get_charm_tracing_receivers().values(),
+        }
+        any_receiver_endpoint_is_https = any(
+            ep.startswith("https://") for ep in receiver_endpoints
+        )
+
+        has_server_cert = bool(getattr(self.cluster.get_tls_data(), "server_cert", None))
+        if any_receiver_endpoint_is_https and not has_server_cert:
+            return True
+        return False
+
     def charm_tracing_config(self) -> Tuple[Optional[str], Optional[str]]:
         """Get the charm tracing configuration from the coordinator.
 
@@ -818,25 +844,20 @@ class Worker(ops.Object):
         >>>         self.worker = Worker(...)
         >>>         self.my_endpoint, self.cert_path = self.worker.charm_tracing_config()
         """
-        receivers = self.cluster.get_charm_tracing_receivers()
+        endpoint = self.cluster.get_charm_tracing_receivers().get("otlp_http")
 
-        if not receivers:
-            return None, None
-
-        endpoint = receivers.get("otlp_http")
         if not endpoint:
             return None, None
-
-        is_https = endpoint.startswith("https://")
 
         tls_data = self.cluster.get_tls_data()
         server_ca_cert = tls_data.server_cert if tls_data else None
 
-        if is_https:
+        if endpoint.startswith("https://"):
             if server_ca_cert is None:
-                raise RuntimeError(
-                    "Cannot send traces to an https endpoint without a certificate."
-                )
+                # https endpoint, but we don't have a cert ourselves:
+                # disable charm tracing as it would fail to flush.
+                return None, None
+
             elif not ROOT_CA_CERT_PATH.exists():
                 # if endpoint is https and we have a tls integration BUT we don't have the
                 # server_cert on disk yet (this could race with _update_tls_certificates):
