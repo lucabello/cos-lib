@@ -11,6 +11,7 @@ from scenario import BlockedStatus
 from scenario.context import CharmEvents
 
 from cosl.coordinated_workers.coordinator import ClusterRolesConfig, Coordinator
+from cosl.coordinated_workers.nginx import NginxConfig
 from cosl.interfaces.cluster import ClusterProviderAppData, ClusterRequirerAppData
 from tests.test_coordinated_workers.test_worker_status import k8s_patch
 
@@ -46,7 +47,7 @@ class MyCoordCharm(ops.CharmBase):
                 "catalogue": None,
                 "receive-datasource": "my-ds-exchange-require",
             },
-            nginx_config=lambda _: "nginx config",
+            nginx_config=NginxConfig("localhost", {}, {}),
             workers_config=lambda _: "worker config",
             resources_requests=lambda _: {"cpu": "50m", "memory": "100Mi"},
             container_name="charm",

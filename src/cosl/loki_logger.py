@@ -128,7 +128,7 @@ class LokiEmitter:
 
         label_name: Any
         label_value: Any
-        for label_name, label_value in extra_labels.items():
+        for label_name, label_value in extra_labels.items():  # type: ignore
             if not isinstance(label_name, str) or not isinstance(label_value, str):
                 return labels
 

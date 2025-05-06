@@ -35,6 +35,7 @@ import cosl
 from cosl.coordinated_workers import worker
 from cosl.coordinated_workers.nginx import (
     Nginx,
+    NginxConfig,
     NginxMappingOverrides,
     NginxPrometheusExporter,
 )
@@ -198,7 +199,7 @@ class Coordinator(ops.Object):
         external_url: str,  # the ingressed url if we have ingress, else fqdn
         worker_metrics_port: int,
         endpoints: _EndpointMapping,
-        nginx_config: Callable[["Coordinator"], str],
+        nginx_config: NginxConfig,
         workers_config: Callable[["Coordinator"], str],
         worker_ports: Optional[Callable[[str], Sequence[int]]] = None,
         nginx_options: Optional[NginxMappingOverrides] = None,
@@ -274,7 +275,9 @@ class Coordinator(ops.Object):
 
         self.nginx = Nginx(
             self._charm,
-            partial(nginx_config, self),
+            config_getter=partial(
+                nginx_config.get_config, self.cluster.gather_addresses_by_role()
+            ),
             options=nginx_options,
         )
         self._workers_config_getter = partial(workers_config, self)

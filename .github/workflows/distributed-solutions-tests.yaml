@@ -42,14 +42,11 @@ jobs:
           sed -i -e "/^cosl[ ><=]/d" -e "/canonical\/cos-lib/d" -e "/#egg=cosl/d" requirements.txt
           echo -e "\ngit+$GITHUB_SERVER_URL/$GITHUB_REPOSITORY@${{ github.head_ref || github.ref_name }}#egg=cosl" >> requirements.txt
 
-      - name: Add charmcraft build dependencies (git)
-        run: yq e '.parts.charm.build-packages += ["git"]' -i charmcraft.yaml
-
       - name: Run the charm's unit tests
         id: unit
         run: |
           if [ -f tox.ini ]; then  # Run Tox
-            tox -e unit,scenario
+            tox -e unit
           elif [ -f Makefile ]; then # Run Make
             make unit
           else
@@ -61,7 +58,7 @@ jobs:
         id: static
         run: |
           if [ -f tox.ini ]; then  # Run Tox
-            tox -e static-charm,static-lib
+            tox -e static
           elif [ -f Makefile ]; then # Run Make
             make static
           else

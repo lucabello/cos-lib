@@ -12,6 +12,7 @@ from src.cosl.coordinated_workers.coordinator import (
     Coordinator,
     S3NotFoundError,
 )
+from src.cosl.coordinated_workers.nginx import NginxConfig
 from src.cosl.interfaces.cluster import ClusterRequirerAppData, ClusterRequirerUnitData
 from tests.test_coordinated_workers.test_worker import MyCharm
 
@@ -162,7 +163,7 @@ def coordinator_charm(request):
                     "receive-datasource": "my-ds-exchange-require",
                     "catalogue": None,
                 },
-                nginx_config=lambda coordinator: f"nginx configuration for {coordinator._charm.meta.name}",
+                nginx_config=NginxConfig("localhost", {}, {}),
                 workers_config=lambda coordinator: f"workers configuration for {coordinator._charm.meta.name}",
                 worker_ports=self._worker_ports,
                 # nginx_options: Optional[NginxMappingOverrides] = None,
