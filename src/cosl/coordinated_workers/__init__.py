@@ -4,6 +4,12 @@
 """Utils for observability Juju charms."""
 
 import importlib
+import warnings
+
+warnings.warn(
+    "The `coordinated_workers` module will be removed from `cosl`. Please migrate to `https://github.com/canonical/cos-coordinated-workers`.",
+    DeprecationWarning,
+)
 
 __all__ = [
     "Coordinator",
