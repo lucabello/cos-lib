@@ -1,6 +1,10 @@
 # cosl
 ![PyPI](https://img.shields.io/pypi/v/cosl)
 
+> [!NOTE]
+> The `coordinated_workers` module and its related support files have been removed from `cosl`. This functionality now lives in a standalone [coordinated-workers](https://github.com/canonical/cos-coordinated-workers) PyPI package. Please migrate to that package. 
+
+
 This library provides utilities for
 [COS Lite](https://github.com/canonical/cos-lite-bundle/) charms:
 

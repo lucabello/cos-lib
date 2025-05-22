@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cosl"
-version = "0.1.1"
+version = "1.0.0"
 authors = [
     { name = "sed-i", email = "82407168+sed-i@users.noreply.github.com" },
 ]
@@ -18,7 +18,6 @@ dependencies = [
     "tenacity",
     "PyYAML",
     "typing-extensions",
-    "lightkube>=v0.15.4",
 ]
 classifiers = [
     "Programming Language :: Python :: 3.8",
@@ -42,7 +41,7 @@ include = ["py.typed"]
 [tool.coverage.run]
 branch = true
 parallel = true
-omit = ["tests/**", "lib/**"]
+omit = ["tests/**"]
 
 [tool.coverage.report]
 show_missing = true
@@ -89,7 +88,7 @@ classmethod-decorators = ["classmethod", "pydantic.validator"]
 [tool.pyright]
 include = ["src"]
 
-extraPaths = ["lib", "src/cosl"]
+extraPaths = ["src/cosl"]
 pythonVersion = "3.8"
 pythonPlatform = "All"
 typeCheckingMode = "strict"
